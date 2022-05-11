@@ -113,4 +113,5 @@ else
   LIBRARY_LOCATIONS += $(dir $(gfortran_libso))
 endif
 
-override XTRALIBS += -lgfortran -lquadmath
+override XTRALIBS += -lgfortran 
+#-lquadmath
