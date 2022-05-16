@@ -1,17 +1,15 @@
-!> Volume fraction solver class:
-!> Provides support for various BC, semi-Lagrangian geometric advancement,
-!> curvature calculation, interface reconstruction.
-module vfs_class
+!> Electrohydrodynamic solver class:
+!> Provides support for various BC,
+module ehd_class
    use precision,      only: WP
    use string,         only: str_medium
    use config_class,   only: config
    use iterator_class, only: iterator
-   use irl_fortran_interface
    implicit none
    private
    
    ! Expose type/constructor/methods
-   public :: vfs,bcond
+   public :: ehd,bcond
    
    ! Also expose the min and max VF values
    public :: VFhi,VFlo
@@ -19,32 +17,8 @@ module vfs_class
    ! List of known available bcond for this solver
    integer, parameter, public :: dirichlet=2         !< Dirichlet condition
    integer, parameter, public :: neumann=3           !< Zero normal gradient
-   
-   ! List of available interface reconstructions schemes for VF
-   integer, parameter, public :: lvira=1             !< LVIRA scheme
-   !integer, parameter, public :: elvira=2            !< ELVIRA scheme
-   !integer, parameter, public :: mof=3               !< MOF scheme
-   integer, parameter, public :: r2p=4               !< R2P scheme
-   integer, parameter, public :: swartz=5            !< Swartz scheme
-   integer, parameter, public :: art=6               !< ART scheme
-   
-   ! IRL cutting moment calculation method
-   integer, parameter, public :: recursive_simplex=0 !< Recursive simplex cutting
-   integer, parameter, public :: half_edge=1         !< Half-edge cutting
-   integer, parameter, public :: nonrecurs_simplex=2 !< Non-recursive simplex cutting
-   
-   ! Default parameters for volume fraction solver
-   integer,  parameter :: nband=3                                 !< Number of cells around the interfacial cells on which localized work is performed
-   integer,  parameter :: advect_band=2                           !< How far we do the transport
-   integer,  parameter :: distance_band=2                         !< How far we build the distance
-   integer,  parameter :: max_interface_planes=2                  !< Maximum number of interfaces allowed (2 for R2P)
-   real(WP), parameter :: VFlo=1.0e-12_WP                         !< Minimum VF value considered
-   real(WP), parameter :: VFhi=1.0_WP-VFlo                        !< Maximum VF value considered
-   real(WP), parameter :: volume_epsilon_factor =1.0e-15_WP       !< Minimum volume  to consider for computational geometry (normalized by min_meshsize**3)
-   real(WP), parameter :: surface_epsilon_factor=1.0e-15_WP       !< Minimum surface to consider for computational geometry (normalized by min_meshsize**2)
-   real(WP), parameter :: iterative_distfind_tol=1.0e-12_WP       !< Tolerance for iterative plane distance finding
-   
-   !> Boundary conditions for the volume fraction solver
+      
+   !> Boundary conditions for the EHD solver
    type :: bcond
       type(bcond), pointer :: next                        !< Linked list of bconds
       character(len=str_medium) :: name='UNNAMED_BCOND'   !< Bcond name (default=UNNAMED_BCOND)
@@ -57,127 +31,46 @@ module vfs_class
    integer, dimension(3,6), parameter :: shift=reshape([+1,0,0,-1,0,0,0,+1,0,0,-1,0,0,0,+1,0,0,-1],shape(shift))
    
    !> Volume fraction solver object definition
-   type :: vfs
+   type :: ehd
       
       ! This is our config
       class(config), pointer :: cfg                       !< This is the config the solver is build for
       
       ! This is the name of the solver
-      character(len=str_medium) :: name='UNNAMED_VFS'     !< Solver name (default=UNNAMED_VFS)
+      character(len=str_medium) :: name='UNNAMED_EHD'     !< Solver name (default=UNNAMED_EHD)
       
       ! Boundary condition list
       integer :: nbc                                      !< Number of bcond for our solver
       type(bcond), pointer :: first_bc                    !< List of bcond for our solver
       
-      ! Volume fraction data
-      real(WP), dimension(:,:,:), allocatable :: VF       !< VF array
-      real(WP), dimension(:,:,:), allocatable :: VFold    !< VFold array
+      ! Electric potential data
+      real(WP), dimension(:,:,:), allocatable :: phi       !< phi array
+      real(WP), dimension(:,:,:), allocatable :: phiold    !< phiold array
       
-      ! Phase barycenter data
-      real(WP), dimension(:,:,:,:), allocatable :: Lbary  !< Liquid barycenter
-      real(WP), dimension(:,:,:,:), allocatable :: Gbary  !< Gas barycenter
-      
-      ! Subcell phasic volume fields
-      real(WP), dimension(:,:,:,:,:,:), allocatable :: Lvol   !< Subcell liquid volume
-      real(WP), dimension(:,:,:,:,:,:), allocatable :: Gvol   !< Subcell gas volume
-      
-      ! Surface density data
-      real(WP), dimension(:,:,:), allocatable :: SDpoly   !< Surface area density from polygonalized interface
-      real(WP), dimension(:,:,:), allocatable :: SD       !< Surface area density from auxiliary transport equation
-      real(WP), dimension(:,:,:), allocatable :: SDold    !< Old surface area density from auxiliary transport equation
-      
-      ! Distance level set
-      real(WP) :: Gclip                                   !< Min/max distance
-      real(WP), dimension(:,:,:), allocatable :: G        !< Distance level set array
-      
-      ! Curvature
-      real(WP), dimension(:,:,:), allocatable :: curv     !< Interface mean curvature
-      
-      ! Band strategy
-      integer, dimension(:,:,:), allocatable :: band      !< Band to localize workload around the interface
-      integer, dimension(:,:),   allocatable :: band_map  !< Unstructured band mapping
-      integer, dimension(0:nband) :: band_count           !< Number of cells per band value
-      
-      ! Interface reconstruction method
-      integer :: reconstruction_method                    !< Interface reconstruction method
-      real(WP) :: twoplane_threshold=0.95_WP              !< Threshold for r2p to switch from one-plane to two-planes
-      real(WP) :: art_threshold=1.30_WP                   !< Threshold for art to switch from r2p to lvira
-      
-      ! Curvature clipping parameter
-      real(WP) :: maxcurv_times_mesh=1.0_WP               !< Clipping parameter for maximum curvature (classically set to 1, but should be larger since we resolve more)
-      
-      ! Flotsam removal parameter - turned off by default
-      real(WP) :: VFflot=0.0_WP                           !< Threshold VF parameter for flotsam removal (0.0=off)
-      real(WP) :: VFsheet=0.0_WP                          !< Threshold VF parameter for sheet removal (0.0=off)
-      
-      ! IRL objects
-      type(ByteBuffer_type) :: send_byte_buffer
-      type(ByteBuffer_type) :: recv_byte_buffer
-      type(ObjServer_PlanarSep_type)  :: planar_separator_allocation
-      type(ObjServer_PlanarLoc_type)  :: planar_localizer_allocation
-      type(ObjServer_LocSepLink_type) :: localized_separator_link_allocation
-      type(ObjServer_LocLink_type)    :: localizer_link_allocation
-      type(PlanarLoc_type),   dimension(:,:,:),   allocatable :: localizer
-      type(PlanarSep_type),   dimension(:,:,:),   allocatable :: liquid_gas_interface
-      type(LocSepLink_type),  dimension(:,:,:),   allocatable :: localized_separator_link
-      type(ListVM_VMAN_type), dimension(:,:,:),   allocatable :: triangle_moments_storage
-      type(LocLink_type),     dimension(:,:,:),   allocatable :: localizer_link
-      type(Poly_type),        dimension(:,:,:,:), allocatable :: interface_polygon
-      type(Poly_type),        dimension(:,:,:,:), allocatable :: polyface
-      type(SepVM_type),       dimension(:,:,:,:), allocatable :: face_flux
+      ! Electric field data
+      real(WP), dimension(:,:,:,:), allocatable :: E       !< Electric field vector
       
       ! Masking info for metric modification
       integer, dimension(:,:,:), allocatable :: mask      !< Integer array used for enforcing bconds
       integer, dimension(:,:,:), allocatable :: vmask     !< Integer array used for enforcing bconds - for vertices
       
-      ! Monitoring quantities
-      real(WP) :: VFmax,VFmin,VFint                       !< Maximum, minimum, and integral volume fraction
-      real(WP) :: SDint,SDpolyint                         !< Integrals of available surface areas
       
    contains
-      procedure :: print=>vfs_print                       !< Output solver to the screen
-      procedure :: initialize_irl                         !< Initialize the IRL objects
+      procedure :: print=>ehd_print                       !< Output solver to the screen
       procedure :: add_bcond                              !< Add a boundary condition
       procedure :: get_bcond                              !< Get a boundary condition
       procedure :: apply_bcond                            !< Apply all boundary conditions
       procedure :: update_band                            !< Update the band info given the VF values
-      procedure :: sync_interface                         !< Synchronize the IRL objects
-      procedure :: remove_flotsams                        !< Remove flotsams manually - not conservative, should be avoided!
-      procedure :: remove_sheets                          !< Remove R2P sheets manually - not conservative, should be avoided!
-      procedure :: clean_irl_and_band                     !< After a manual change in VF (maybe due to transfer to drops), update IRL and band info
-      procedure :: sync_and_clean_barycenters             !< Synchronize and clean up phasic barycenters
-      procedure, private :: sync_side                     !< Synchronize the IRL objects across one side - another I/O helper
-      procedure, private :: sync_ByteBuffer               !< Communicate byte packets across one side - another I/O helper
-      procedure, private :: calculate_offset_to_planes    !< Helper routine for I/O
-      procedure, private :: crude_phase_test              !< Helper function that rapidly assess if a mixed cell might be present
-      procedure, private :: project                       !< Helper function that performs a Lagrangian projection of a vertex
-      procedure :: read_interface                         !< Read an IRL interface from a file
-      procedure :: write_interface                        !< Write an IRL interface to a file
-      procedure :: advance                                !< Advance VF to next step
-      procedure :: advect_interface                       !< Advance IRL surface to next step
-      procedure :: build_interface                        !< Reconstruct IRL interface from VF field
-      procedure :: build_lvira                            !< LVIRA reconstruction of the interface from VF field
-      procedure :: build_r2p                              !< R2P reconstruction of the interface from VF field
-      procedure :: build_art                              !< ART reconstruction of the interface from VF field
-      procedure :: smooth_interface                       !< Interface smoothing based on Swartz idea
-      procedure :: set_full_bcond                         !< Full liq/gas plane-setting for boundary cells - this is stair-stepped
-      procedure :: polygonalize_interface                 !< Build a discontinuous polygonal representation of the IRL interface
-      procedure :: distance_from_polygon                  !< Build a signed distance field from the polygonalized interface
-      procedure :: subcell_vol                            !< Build subcell phasic volumes from reconstructed interface
-      procedure :: reset_volume_moments                   !< Reconstruct volume moments from IRL interfaces
-      procedure :: update_surfmesh                        !< Update a surfmesh object using current polygons
-      procedure :: get_curvature                          !< Compute curvature from IRL surface polygons
-      procedure :: paraboloid_fit                         !< Perform local paraboloid fit of IRL surface using IRL barycenter data
-      procedure :: paraboloid_integral_fit                !< Perform local paraboloid fit of IRL surface using surface-integrated IRL data
+      procedure :: advance                                !< Advance potential to next step
       procedure :: get_max                                !< Calculate maximum field values
-      procedure :: get_cfl                                !< Get CFL for the VF solver
-   end type vfs
+      procedure :: get_cfl                                !< Get CFL for the EHD solver
+   end type ehd
    
    
    !> Declare volume fraction solver constructor
-   interface vfs
+   interface ehd
       procedure constructor
-   end interface vfs
+   end interface ehd
    
 contains
    
@@ -186,7 +79,7 @@ contains
    function constructor(cfg,reconstruction_method,name) result(self)
       use messager, only: die
       implicit none
-      type(vfs) :: self
+      type(ehd) :: self
       class(config), target, intent(in) :: cfg
       integer, intent(in) :: reconstruction_method
       character(len=*), optional :: name
@@ -206,34 +99,15 @@ contains
       self%first_bc=>NULL()
       
       ! Allocate variables
-      allocate(self%VF    (  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%VF    =0.0_WP
-      allocate(self%VFold (  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%VFold =0.0_WP
-      allocate(self%Lbary (3,self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%Lbary =0.0_WP
-      allocate(self%Gbary (3,self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%Gbary =0.0_WP
-      allocate(self%SDpoly(  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%SDpoly=0.0_WP
-      allocate(self%SD    (  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%SD    =0.0_WP
-      allocate(self%SDold (  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%SDold =0.0_WP
-      allocate(self%G     (  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%G     =0.0_WP
-      allocate(self%curv  (  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%curv  =0.0_WP
-      
-      ! Set clipping distance
-      self%Gclip=real(distance_band+1,WP)*self%cfg%min_meshsize
-      
-      ! Subcell phasic volumes
-      allocate(self%Lvol(0:1,0:1,0:1,self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%Lvol=0.0_WP
-      allocate(self%Gvol(0:1,0:1,0:1,self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%Gvol=0.0_WP
+      allocate(self%phi   (  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%phi    =0.0_WP
+      allocate(self%phiold(  self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%phiold =0.0_WP
+      allocate(self%E(3,self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%E =0.0_WP
       
       ! Prepare the band arrays
       allocate(self%band(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%band=0
       if (allocated(self%band_map)) deallocate(self%band_map)
       
-      ! Set reconstruction method
-      self%reconstruction_method=reconstruction_method
-      
-      ! Initialize IRL
-      call self%initialize_irl()
-      
-      ! Prepare mask for VF
+      ! Prepare mask for EHD
       allocate(self%mask(self%cfg%imino_:self%cfg%imaxo_,self%cfg%jmino_:self%cfg%jmaxo_,self%cfg%kmino_:self%cfg%kmaxo_)); self%mask=0
       if (.not.self%cfg%xper) then
          if (self%cfg%iproc.eq.           1) self%mask(:self%cfg%imin-1,:,:)=2
@@ -283,173 +157,6 @@ contains
       if (.not.self%cfg%zper.and.self%cfg%kproc.eq.1) self%vmask(:,:,self%cfg%kmino)=self%vmask(:,:,self%cfg%kmino+1)
       
    end function constructor
-   
-   
-   !> Initialize the IRL representation of our interfaces
-   subroutine initialize_irl(this)
-      implicit none
-      class(vfs), intent(inout) :: this
-      integer :: i,j,k,n,tag
-      real(WP), dimension(3,4) :: vert
-      integer(IRL_LargeOffsetIndex_t) :: total_cells
-      
-      ! Transfer small constants to IRL
-      call setVFBounds(VFlo)
-      call setVFTolerance_IterativeDistanceFinding(iterative_distfind_tol)
-      call setMinimumVolToTrack(volume_epsilon_factor*this%cfg%min_meshsize**3)
-      call setMinimumSAToTrack(surface_epsilon_factor*this%cfg%min_meshsize**2)
-      
-      ! Set IRL's moment calculation method
-      call getMoments_setMethod(half_edge)
-      
-      ! Allocate IRL arrays
-      allocate(this%localizer               (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      allocate(this%liquid_gas_interface    (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      allocate(this%localized_separator_link(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      allocate(this%triangle_moments_storage(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      allocate(this%localizer_link          (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      allocate(this%interface_polygon(1:max_interface_planes,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      allocate(this%polyface            (1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      
-      ! Work arrays for face fluxes
-      allocate(this%face_flux(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      do k=this%cfg%kmino_,this%cfg%kmaxo_
-         do j=this%cfg%jmino_,this%cfg%jmaxo_
-            do i=this%cfg%imino_,this%cfg%imaxo_
-               do n=1,3
-                  call new(this%face_flux(n,i,j,k))
-               end do
-            end do
-         end do
-      end do
-      
-      ! Precomputed face correction velocities
-      !> allocate(face_correct_velocity(1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_))
-      
-      ! Initialize size for IRL
-      total_cells=int(this%cfg%nxo_,8)*int(this%cfg%nyo_,8)*int(this%cfg%nzo_,8)
-      call new(this%planar_localizer_allocation,total_cells)
-      call new(this%planar_separator_allocation,total_cells)
-      call new(this%localized_separator_link_allocation,total_cells)
-      call new(this%localizer_link_allocation,total_cells)
-      
-      ! Initialize arrays and setup linking
-      do k=this%cfg%kmino_,this%cfg%kmaxo_
-         do j=this%cfg%jmino_,this%cfg%jmaxo_
-            do i=this%cfg%imino_,this%cfg%imaxo_
-               ! Transfer cell to IRL
-               call new(this%localizer(i,j,k),this%planar_localizer_allocation)
-               call setFromRectangularCuboid(this%localizer(i,j,k),[this%cfg%x(i),this%cfg%y(j),this%cfg%z(k)],[this%cfg%x(i+1),this%cfg%y(j+1),this%cfg%z(k+1)])
-               ! PLIC interface(s)
-               call new(this%liquid_gas_interface(i,j,k),this%planar_separator_allocation)
-               ! PLIC+mesh with connectivity (i.e., link)
-               call new(this%localized_separator_link(i,j,k),this%localized_separator_link_allocation,this%localizer(i,j,k),this%liquid_gas_interface(i,j,k))
-               ! For transport surface
-               call new(this%triangle_moments_storage(i,j,k))
-               ! Mesh with connectivity
-               call new(this%localizer_link(i,j,k),this%localizer_link_allocation,this%localizer(i,j,k))
-            end do
-         end do
-      end do
-      
-      ! Polygonal representation of the surface
-      do k=this%cfg%kmino_,this%cfg%kmaxo_
-         do j=this%cfg%jmino_,this%cfg%jmaxo_
-            do i=this%cfg%imino_,this%cfg%imaxo_
-               do n=1,max_interface_planes
-                  call new(this%interface_polygon(n,i,j,k))
-               end do
-            end do
-         end do
-      end do
-      
-      ! Polygonal representation of cell faces
-      do k=this%cfg%kmino_,this%cfg%kmaxo_
-         do j=this%cfg%jmino_,this%cfg%jmaxo_
-            do i=this%cfg%imino_,this%cfg%imaxo_
-               ! Polygonal representation of the x-face
-               call new(this%polyface(1,i,j,k))
-               vert(:,1)=[this%cfg%x(i),this%cfg%y(j  ),this%cfg%z(k  )]
-               vert(:,2)=[this%cfg%x(i),this%cfg%y(j+1),this%cfg%z(k  )]
-               vert(:,3)=[this%cfg%x(i),this%cfg%y(j+1),this%cfg%z(k+1)]
-               vert(:,4)=[this%cfg%x(i),this%cfg%y(j  ),this%cfg%z(k+1)]
-               call construct(this%polyface(1,i,j,k),4,vert)
-               call setPlaneOfExistence(this%polyface(1,i,j,k),[1.0_WP,0.0_WP,0.0_WP,this%cfg%x(i)])
-               ! Polygonal representation of the y-face
-               call new(this%polyface(2,i,j,k))
-               vert(:,1)=[this%cfg%x(i  ),this%cfg%y(j),this%cfg%z(k  )]
-               vert(:,2)=[this%cfg%x(i  ),this%cfg%y(j),this%cfg%z(k+1)]
-               vert(:,3)=[this%cfg%x(i+1),this%cfg%y(j),this%cfg%z(k+1)]
-               vert(:,4)=[this%cfg%x(i+1),this%cfg%y(j),this%cfg%z(k  )]
-               call construct(this%polyface(2,i,j,k),4,vert)
-               call setPlaneOfExistence(this%polyface(2,i,j,k),[0.0_WP,1.0_WP,0.0_WP,this%cfg%y(j)])
-               ! Polygonal representation of the z-face
-               call new(this%polyface(3,i,j,k))
-               vert(:,1)=[this%cfg%x(i  ),this%cfg%y(j  ),this%cfg%z(k)]
-               vert(:,2)=[this%cfg%x(i+1),this%cfg%y(j  ),this%cfg%z(k)]
-               vert(:,3)=[this%cfg%x(i+1),this%cfg%y(j+1),this%cfg%z(k)]
-               vert(:,4)=[this%cfg%x(i  ),this%cfg%y(j+1),this%cfg%z(k)]
-               call construct(this%polyface(3,i,j,k),4,vert)
-               call setPlaneOfExistence(this%polyface(3,i,j,k),[0.0_WP,0.0_WP,1.0_WP,this%cfg%z(k)])
-            end do
-         end do
-      end do
-      
-      ! Give each link a unique lexicographic tag (per processor)
-      do k=this%cfg%kmino_,this%cfg%kmaxo_
-         do j=this%cfg%jmino_,this%cfg%jmaxo_
-            do i=this%cfg%imino_,this%cfg%imaxo_
-               tag=this%cfg%get_lexico_from_ijk([i,j,k])
-               call setId(this%localized_separator_link(i,j,k),tag)
-               call setId(this%localizer_link(i,j,k),tag)
-            end do
-         end do
-      end do
-      
-      ! Set the connectivity
-      do k=this%cfg%kmino_,this%cfg%kmaxo_
-         do j=this%cfg%jmino_,this%cfg%jmaxo_
-            do i=this%cfg%imino_,this%cfg%imaxo_
-               ! In the x- direction
-               if (i.gt.this%cfg%imino_) then
-                  call setEdgeConnectivity(this%localized_separator_link(i,j,k),0,this%localized_separator_link(i-1,j,k))
-                  call setEdgeConnectivity(this%localizer_link(i,j,k),0,this%localizer_link(i-1,j,k))
-               end if
-               ! In the x+ direction
-               if (i.lt.this%cfg%imaxo_) then
-                  call setEdgeConnectivity(this%localized_separator_link(i,j,k),1,this%localized_separator_link(i+1,j,k))
-                  call setEdgeConnectivity(this%localizer_link(i,j,k),1,this%localizer_link(i+1,j,k))
-               end if
-               ! In the y- direction
-               if (j.gt.this%cfg%jmino_) then
-                  call setEdgeConnectivity(this%localized_separator_link(i,j,k),2,this%localized_separator_link(i,j-1,k))
-                  call setEdgeConnectivity(this%localizer_link(i,j,k),2,this%localizer_link(i,j-1,k))
-               end if
-               ! In the y+ direction
-               if (j.lt.this%cfg%jmaxo_) then
-                  call setEdgeConnectivity(this%localized_separator_link(i,j,k),3,this%localized_separator_link(i,j+1,k))
-                  call setEdgeConnectivity(this%localizer_link(i,j,k),3,this%localizer_link(i,j+1,k))
-               end if
-               ! In the z- direction
-               if (k.gt.this%cfg%kmino_) then
-                  call setEdgeConnectivity(this%localized_separator_link(i,j,k),4,this%localized_separator_link(i,j,k-1))
-                  call setEdgeConnectivity(this%localizer_link(i,j,k),4,this%localizer_link(i,j,k-1))
-               end if
-               ! In the z+ direction
-               if (k.lt.this%cfg%kmaxo_) then
-                  call setEdgeConnectivity(this%localized_separator_link(i,j,k),5,this%localized_separator_link(i,j,k+1))
-                  call setEdgeConnectivity(this%localizer_link(i,j,k),5,this%localizer_link(i,j,k+1))
-               end if
-            end do
-         end do
-      end do
-      
-      ! Prepare byte storage for synchronization
-      call new(this%send_byte_buffer)
-      call new(this%recv_byte_buffer)
-      
-   end subroutine initialize_irl
-   
    
    !> Add a boundary condition
    subroutine add_bcond(this,name,type,locator,dir)
@@ -580,7 +287,7 @@ contains
    end subroutine apply_bcond
    
    
-   !> Calculate the new VF based on U/V/W and dt
+   !> Calculate the new phi based on U/V/W and dt
    subroutine advance(this,dt,U,V,W)
       implicit none
       class(vfs), intent(inout) :: this

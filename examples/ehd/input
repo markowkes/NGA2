@@ -1,13 +1,13 @@
 # Parallelization
-Partition :	4 1 1
+Partition :	1 1 1
 
 # Mesh definition
 Lx :	1e-3
 Ly :	1e-3
 Lz :	1e-3
-nx :	50
-ny :	50
-nz :	50
+nx :	20
+ny :	20
+nz :	20
 
 # Droplet 1 definiton
 Droplet 1 diameter : 360e-6              ! 335.2e-6

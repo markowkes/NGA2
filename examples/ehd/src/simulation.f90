@@ -4,6 +4,7 @@ module simulation
    use geometry,          only: cfg
    use tpns_class,        only: tpns
    use vfs_class,         only: vfs
+   use tpsc_class,        only: tpsc
    use timetracker_class, only: timetracker
    use ensight_class,     only: ensight
    use surfmesh_class,    only: surfmesh
@@ -11,33 +12,34 @@ module simulation
    use monitor_class,     only: monitor
    implicit none
    private
-   
-   !> Single two-phase flow solver and volume fraction solver and corresponding time tracker
+
+   !> Single two-phase flow solver, volume fraction solver, scalar solver and corresponding time tracker
    type(tpns),        public :: fs
    type(vfs),         public :: vf
+   type(tpsc),        public :: sc
    type(timetracker), public :: time
-   
+
    !> Ensight postprocessing
    type(surfmesh) :: smesh
    type(ensight)  :: ens_out
    type(event)    :: ens_evt
-   
+
    !> Simulation monitor file
    type(monitor) :: mfile,cflfile
-   
+
    public :: simulation_init,simulation_run,simulation_final
-   
+
    !> Private work arrays
-   real(WP), dimension(:,:,:), allocatable :: resU,resV,resW
+   real(WP), dimension(:,:,:), allocatable :: resU,resV,resW,resSC
    real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
-   
+
    !> Problem definition
    real(WP), dimension(3) :: center1,center2,vel1,vel2
    real(WP) :: radius1,radius2
-   
+
 contains
-   
-   
+
+
    !> Function that defines a level set function for colliding drops problem
    function levelset_colliding_drops(xyz,t) result(G)
       implicit none
@@ -51,25 +53,26 @@ contains
       ! Combine
       G=max(G1,G2)
    end function levelset_colliding_drops
-   
-   
+
+
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
       implicit none
-      
-      
+
+      print *,'simulation_init'
       ! Allocate work arrays
       allocate_work_arrays: block
-         allocate(resU(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(resV(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(resW(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Ui  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Vi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
-         allocate(Wi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(resU (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(resV (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(resW (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(resSC(cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(Ui   (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(Vi   (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(Wi   (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       end block allocate_work_arrays
-      
-      
+
+
       ! Initialize time tracker with 2 subiterations
       initialize_timetracker: block
          time=timetracker(amRoot=cfg%amRoot)
@@ -79,8 +82,10 @@ contains
          time%dt=time%dtmax
          time%itmax=2
       end block initialize_timetracker
-      
-      
+
+      print *,'simulation_init: timetracker'
+
+
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
          use mms_geom, only: cube_refine_vol
@@ -123,23 +128,31 @@ contains
                end do
             end do
          end do
+         print *,'simulation_init: vof 1'
          ! Update the band
          call vf%update_band()
+         print *,'simulation_init: vof 1.1'
          ! Perform interface reconstruction from VOF field
          call vf%build_interface()
+         print *,'simulation_init: vof 1.2'
          ! Create discontinuous polygon mesh from IRL interface
          call vf%polygonalize_interface()
+         print *,'simulation_init: vof 1.3'
          ! Calculate distance from polygons
          call vf%distance_from_polygon()
+         print *,'simulation_init: vof 1.4'
          ! Calculate subcell phasic volumes
          call vf%subcell_vol()
+         print *,'simulation_init: vof 1.5'
          ! Calculate curvature
          call vf%get_curvature()
+         print *,'simulation_init: vof 1.6'
          ! Reset moments to guarantee compatibility with interface reconstruction
          call vf%reset_volume_moments()
       end block create_and_initialize_vof
-      
-      
+
+      print *,'simulation_init: vof'
+
       ! Create a two-phase flow solver without bconds
       create_and_initialize_flow_solver: block
          use ils_class, only: gmres_amg
@@ -189,8 +202,39 @@ contains
          call fs%interp_vel(Ui,Vi,Wi)
          call fs%get_div()
       end block create_and_initialize_flow_solver
-      
-      
+
+      print *,'simulation_init: flow_solver'
+
+      ! Create and initialize scalar solver
+      create_and_initialize_scalar : block
+         use parallel, only : rank
+         use ils_class, only : gmres
+         use tpsc_class, only: bcond,dirichlet,neumann,quick
+         integer :: i,j,k
+         real(WP), dimension(3) :: xyz
+         sc=tpsc(cfg=cfg,scheme=quick,name='EHD Potential')
+         ! Assign density and diffusivity = viscosity
+         sc%rho_l=fs%rho_l; sc%rho_g=fs%rho_g; sc%diff=fs%visc
+         ! Configure implicit scalar solver
+         sc%implicit%maxit=fs%implicit%maxit; sc%implicit%rcvg=fs%implicit%rcvg
+         ! Setup the solver
+         call sc%setup(implicit_ils=gmres)
+         ! Initialize the scalar fields
+         sc%SC=0.0_WP
+         do k=sc%cfg%kmino_,sc%cfg%kmaxo_
+            do j=sc%cfg%jmino_,sc%cfg%jmaxo_
+               do i=sc%cfg%imino_,sc%cfg%imaxo_
+                  ! Scalar velocity
+                  xyz=[sc%cfg%xm(i),sc%cfg%ym(j),sc%cfg%zm(k)]
+                  if (radius1-sqrt(sum((xyz-center1)**2)).ge.0.0_WP) sc%SC(i,j,k)=1.0_WP
+                  if (radius2-sqrt(sum((xyz-center2)**2)).ge.0.0_WP) sc%SC(i,j,k)=2.0_WP
+               end do
+            end do
+         end do
+      end block create_and_initialize_scalar
+
+      print *,'simulation_init: scalar'
+
       ! Create surfmesh object for interface polygon output
       create_smesh: block
          use irl_fortran_interface
@@ -215,12 +259,14 @@ contains
             end do
          end do
       end block create_smesh
-      
-      
+
+      print *,'simulation_init: smesh'
+
+
       ! Add Ensight output
       create_ensight: block
          ! Create Ensight output from cfg
-         ens_out=ensight(cfg=cfg,name='CollidingDrop')
+         ens_out=ensight(cfg=cfg,name='EHD')
          ! Create event for Ensight output
          ens_evt=event(time=time,name='Ensight output')
          call param_read('Ensight output period',ens_evt%tper)
@@ -228,12 +274,15 @@ contains
          call ens_out%add_vector('velocity',Ui,Vi,Wi)
          call ens_out%add_scalar('VOF',vf%VF)
          call ens_out%add_scalar('curvature',vf%curv)
+         call ens_out%add_scalar('phi',sc%SC)
          call ens_out%add_surface('vofplic',smesh)
          ! Output to ensight
          if (ens_evt%occurs()) call ens_out%write_data(time%t)
       end block create_ensight
-      
-      
+
+      print *,'simulation_init: ensight'
+
+
       ! Create a monitor file
       create_monitor: block
          ! Prepare some info about fields
@@ -270,73 +319,118 @@ contains
          call cflfile%add_column(fs%CFLv_z,'Viscous zCFL')
          call cflfile%write()
       end block create_monitor
-      
-      
+
+      print *,'simulation_init: monitor'
+
    end subroutine simulation_init
-   
-   
+
+
    !> Perform an NGA2 simulation - this mimicks NGA's old time integration for multiphase
    subroutine simulation_run
+      use parallel, only: rank
       implicit none
-      
+
+      print *,'sim_run - ehd'
+
       ! Perform time integration
       do while (.not.time%done())
-         
+
          ! Increment time
          call fs%get_cfl(time%dt,time%cfl)
          call time%adjust_dt()
          call time%increment()
-         
+
+         print *,'prep 1'
+
+         ! Remember old scalar
+         sc%SCold=sc%SC
+
          ! Remember old VOF
          vf%VFold=vf%VF
-         
+
          ! Remember old velocity
          fs%Uold=fs%U
          fs%Vold=fs%V
          fs%Wold=fs%W
-         
+
+         print *,'prep 2'
+
          ! Apply time-varying Dirichlet conditions
          ! This is where time-dpt Dirichlet would be enforced
-         
+
+         ! Prepare old density (at n)
+         call sc%get_olddensity(vf=vf)
+
+         print *,'prep 2.5'
+
          ! Prepare old staggered density (at n)
          call fs%get_olddensity(vf=vf)
-         
+
+         print *,'prep 3'
+
          ! VOF solver step
          call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W)
-         
+         print *,'prep 4'
+
          ! Prepare new staggered viscosity (at n+1)
          call fs%get_viscosity(vf=vf)
-         
+
+         print *,'prep done'
+
          ! Perform sub-iterations
          do while (time%it.le.time%itmax)
-            
+
+            print *,'sub-iters' 
+
+            ! Build mid-time scalar
+            sc%SC=0.5_WP*(sc%SC+sc%SCold)
+
             ! Build mid-time velocity
             fs%U=0.5_WP*(fs%U+fs%Uold)
             fs%V=0.5_WP*(fs%V+fs%Vold)
             fs%W=0.5_WP*(fs%W+fs%Wold)
-            
+
+            ! ============= SCALAR SOLVER =======================
+            ! Preliminary scalar transport step at the interface
+            call sc%prepare_advection_upwind(fs=fs,dt=time%dt)
+            ! Convective velocity (rho*U)
+            resU=fs%rho_U*fs%U; resV=fs%rho_V*fs%V; resW=fs%rho_W*fs%W
+            ! Explicit calculation of drhoSC/dt from scalar equation
+            call sc%get_drhoSCdt(drhoSCdt=resSC,rhoU=resU,rhoV=resV,rhoW=resW)
+            ! Assemble explicit residual
+            resSC=-2.0_WP*(sc%rho*sc%SC-sc%rho*sc%SCold)+time%dt*resSC
+            ! Form implicit residual
+            call sc%solve_implicit(dt=time%dt,resSC=resSC,rhoU=resU,rhoV=resV,rhoW=resW)
+            ! Apply this residual
+            sc%SC=2.0_WP*sc%SC-sc%SCold+resSC
+            ! Apply other boundary conditions on the resulting field
+            call sc%apply_bcond(time%t,time%dt)
+            print *,rank,'max(SC)=',maxval(sc%SC)
+            ! ===================================================
+
+            ! ============ VELOCITY SOLVER ======================
             ! Preliminary mass and momentum transport step at the interface
             call fs%prepare_advection_upwind(dt=time%dt)
-            
+
             ! Explicit calculation of drho*u/dt from NS
             call fs%get_dmomdt(resU,resV,resW)
-            
+
             ! Assemble explicit residual
             resU=-2.0_WP*fs%rho_U*fs%U+(fs%rho_Uold+fs%rho_U)*fs%Uold+time%dt*resU
             resV=-2.0_WP*fs%rho_V*fs%V+(fs%rho_Vold+fs%rho_V)*fs%Vold+time%dt*resV
             resW=-2.0_WP*fs%rho_W*fs%W+(fs%rho_Wold+fs%rho_W)*fs%Wold+time%dt*resW
-            
+
             ! Form implicit residuals
             call fs%solve_implicit(time%dt,resU,resV,resW)
-            
+
             ! Apply these residuals
             fs%U=2.0_WP*fs%U-fs%Uold+resU
             fs%V=2.0_WP*fs%V-fs%Vold+resV
             fs%W=2.0_WP*fs%W-fs%Wold+resW
-            
+
             ! Apply other boundary conditions
             call fs%apply_bcond(time%t,time%dt)
-            
+
             ! Solve Poisson equation
             call fs%update_laplacian()
             call fs%correct_mfr()
@@ -346,23 +440,24 @@ contains
             fs%psolv%sol=0.0_WP
             call fs%psolv%solve()
             call fs%shift_p(fs%psolv%sol)
-            
+
             ! Correct velocity
             call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
             fs%P=fs%P+fs%psolv%sol
             fs%U=fs%U-time%dt*resU/fs%rho_U
             fs%V=fs%V-time%dt*resV/fs%rho_V
             fs%W=fs%W-time%dt*resW/fs%rho_W
-            
+            ! ===================================================
+
             ! Increment sub-iteration counter
             time%it=time%it+1
-            
+
          end do
-         
+
          ! Recompute interpolated velocity and divergence
          call fs%interp_vel(Ui,Vi,Wi)
          call fs%get_div()
-         
+
          ! Output to ensight
          if (ens_evt%occurs()) then
             ! Update surfmesh object
@@ -389,35 +484,32 @@ contains
             ! Perform ensight output
             call ens_out%write_data(time%t)
          end if
-         
+
          ! Perform and output monitoring
          call fs%get_max()
          call vf%get_max()
          call mfile%write()
          call cflfile%write()
-         
+
       end do
-      
+
    end subroutine simulation_run
-   
-   
+
+
    !> Finalize the NGA2 simulation
    subroutine simulation_final
       implicit none
-      
+
       ! Get rid of all objects - need destructors
       ! monitor
       ! ensight
       ! bcond
       ! timetracker
-      
+
       ! Deallocate work arrays
-      deallocate(resU,resV,resW,Ui,Vi,Wi)
-      
+      deallocate(resSC,resU,resV,resW,Ui,Vi,Wi)
+
    end subroutine simulation_final
-   
-   
-   
-   
-   
+
+
 end module simulation
