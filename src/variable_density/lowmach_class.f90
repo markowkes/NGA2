@@ -1355,9 +1355,9 @@ contains
                Vxm=sum(this%itpi_x(:,i,j,k)*Vi(i-1:i,j,k)); Vxp=sum(this%itpi_x(:,i+1,j,k)*Vi(i:i+1,j,k)); Vym=sum(this%itpi_y(:,i,j,k)*Vi(i,j-1:j,k)); Vyp=sum(this%itpi_y(:,i,j+1,k)*Vi(i,j:j+1,k)); Vzm=sum(this%itpi_z(:,i,j,k)*Vi(i,j,k-1:k)); Vzp=sum(this%itpi_z(:,i,j,k+1)*Vi(i,j,k:k+1))
                Wxm=sum(this%itpi_x(:,i,j,k)*Wi(i-1:i,j,k)); Wxp=sum(this%itpi_x(:,i+1,j,k)*Wi(i:i+1,j,k)); Wym=sum(this%itpi_y(:,i,j,k)*Wi(i,j-1:j,k)); Wyp=sum(this%itpi_y(:,i,j+1,k)*Wi(i,j:j+1,k)); Wzm=sum(this%itpi_z(:,i,j,k)*Wi(i,j,k-1:k)); Wzp=sum(this%itpi_z(:,i,j,k+1)*Wi(i,j,k:k+1))
                ! Get velocity gradient tensor
-               dUdx(1,1)=this%cfg%dxi(i)*(Uxp-Uxm); dUdx(1,2)=this%cfg%dyi(j)*(Uxp-Uxm); dUdx(1,3)=this%cfg%dzi(k)*(Uxp-Uxm)
-               dUdx(2,1)=this%cfg%dxi(i)*(Vxp-Vxm); dUdx(2,2)=this%cfg%dyi(j)*(Vxp-Vxm); dUdx(2,3)=this%cfg%dzi(k)*(Vxp-Vxm)
-               dUdx(3,1)=this%cfg%dxi(i)*(Wxp-Wxm); dUdx(3,2)=this%cfg%dyi(j)*(Wxp-Wxm); dUdx(3,3)=this%cfg%dzi(k)*(Wxp-Wxm)
+               dUdx(1,1)=this%cfg%dxi(i)*(Uxp-Uxm); dUdx(1,2)=this%cfg%dyi(j)*(Uyp-Uym); dUdx(1,3)=this%cfg%dzi(k)*(Uzp-Uzm)
+               dUdx(2,1)=this%cfg%dxi(i)*(Vxp-Vxm); dUdx(2,2)=this%cfg%dyi(j)*(Vyp-Vym); dUdx(2,3)=this%cfg%dzi(k)*(Vzp-Vzm)
+               dUdx(3,1)=this%cfg%dxi(i)*(Wxp-Wxm); dUdx(3,2)=this%cfg%dyi(j)*(Wyp-Wym); dUdx(3,3)=this%cfg%dzi(k)*(Wzp-Wzm)
                ! Assemble the strain rate
                SR(1,i,j,k)=dUdx(1,1)-(dUdx(1,1)+dUdx(2,2)+dUdx(3,3))/3.0_WP
                SR(2,i,j,k)=dUdx(2,2)-(dUdx(1,1)+dUdx(2,2)+dUdx(3,3))/3.0_WP
@@ -1571,17 +1571,19 @@ contains
    
    
    !> Correct MFR through correctable bconds - acts on rhoU only, U/V/W needs to be adjusted elsewhere
-   subroutine correct_mfr(this)
+   subroutine correct_mfr(this,drhodt)
       use mpi_f08, only: MPI_SUM
       implicit none
       class(lowmach), intent(inout) :: this
-      real(WP) :: mfr_error,mom_correction
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: drhodt      !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP) :: mfr_error,mom_correction,dMdt
       integer :: i,j,k,n
       type(bcond), pointer :: my_bc
       
       ! Evaluate MFR mismatch and velocity correction
+      call this%cfg%integrate(A=drhodt,integral=dMdt)
       call this%get_mfr()
-      mfr_error=sum(this%mfr)
+      mfr_error=sum(this%mfr)+dMdt
       if (abs(mfr_error).lt.10.0_WP*epsilon(1.0_WP).or.abs(this%correctable_area).lt.10.0_WP*epsilon(1.0_WP)) return
       mom_correction=-mfr_error/(this%correctable_area)
       
