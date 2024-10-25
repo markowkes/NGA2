@@ -467,6 +467,20 @@ contains
          ! VOF solver step
          call vf%advance(dt=time%dt,U=fs%U,V=fs%V,W=fs%W)
          
+         ! Put back no-slip here
+         !no_slip: block
+         !   integer :: i,j,k
+         !   do k=fs%cfg%kmin_,fs%cfg%kmax_+1
+         !      do j=fs%cfg%jmin_,fs%cfg%jmax_+1
+         !         do i=fs%cfg%imin_,fs%cfg%imax_+1
+         !            ! Check if there is a wall in y-
+         !           if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i-1,j-1,k).eq.1) fs%U(i,j-1,k)=0.0_WP
+         !            if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i,j-1,k-1).eq.1) fs%W(i,j-1,k)=0.0_WP
+         !         end do
+         !      end do
+         !   end do
+         !end block no_slip
+         
          ! Prepare new staggered viscosity (at n+1)
          call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
          
@@ -656,6 +670,8 @@ contains
                
                ! Check if there is a wall in y-
                if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i-1,j-1,k).eq.1) then
+                  ! Start from no-slip
+                  fs%U(i,j-1,k)=0.0_WP
                   ! Define wall normal
                   nw=[0.0_WP,+1.0_WP,0.0_WP]
                   ! Handle U-slip
@@ -668,6 +684,14 @@ contains
                      beta=beta_cst*fs%cfg%dx(i)
                      fs%U(i,j-1,k)=beta*fs%sigma*(mycos-cos_contact_angle)*sum(fs%divu_x(:,i,j,k)*vf%VF(i-1:i,j,k))
                   end if
+               end if
+               
+               ! Check if there is a wall in y-
+               if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i,j-1,k-1).eq.1) then
+                  ! Start from no-slip
+                  fs%W(i,j-1,k)=0.0_WP
+                  ! Define wall normal
+                  nw=[0.0_WP,+1.0_WP,0.0_WP]
                   ! Handle W-slip
                   mysurf=abs(calculateVolume(vf%interface_polygon(1,i,j,k-1)))+abs(calculateVolume(vf%interface_polygon(1,i,j,k)))
                   if (mysurf.gt.0.0_WP.and.fs%wmask(i,j,k).eq.0) then

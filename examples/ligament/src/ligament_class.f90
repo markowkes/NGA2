@@ -6,14 +6,14 @@ module ligament_class
    use ensight_class,     only: ensight
    use surfmesh_class,    only: surfmesh
    use hypre_str_class,   only: hypre_str
-   !use ddadi_class,       only: ddadi
+   use ddadi_class,       only: ddadi
    use vfs_class,         only: vfs
    use tpns_class,        only: tpns
-   use lpt_class,         only: lpt
-   !use breakup_class,     only: breakup
    use timetracker_class, only: timetracker
    use event_class,       only: event
    use monitor_class,     only: monitor
+   use timer_class,       only: timer
+   use pardata_class,     only: pardata
    implicit none
    private
    
@@ -29,13 +29,9 @@ module ligament_class
       type(vfs)         :: vf    !< Volume fraction solver
       type(tpns)        :: fs    !< Two-phase flow solver
       type(hypre_str)   :: ps    !< Structured Hypre linear solver for pressure
-      !type(ddadi)       :: vs    !< DDADI solver for velocity
+      type(ddadi)       :: vs    !< DDADI solver for velocity
       type(timetracker) :: time  !< Time info
       
-      !> Break-up modeling
-      type(lpt)         :: lp    !< Lagrangian particle solver
-      !type(breakup)     :: bu    !< SGS break-up model
-
       !> Ensight postprocessing
       type(surfmesh) :: smesh    !< Surface mesh for interface
       type(ensight)  :: ens_out  !< Ensight output for flow variables
@@ -51,7 +47,20 @@ module ligament_class
       
       !> Iterator for VOF removal
       type(iterator) :: vof_removal_layer  !< Edge of domain where we actively remove VOF
+      real(WP) :: vof_removed              !< Integral of VOF removed
+      integer  :: nlayer=4                 !< Size of buffer layer for VOF removal
       
+      !> Timing info
+      type(monitor) :: timefile !< Timing monitoring
+      type(timer)   :: tstep    !< Timer for step
+      type(timer)   :: tvel     !< Timer for velocity
+      type(timer)   :: tpres    !< Timer for pressure
+      type(timer)   :: tvof     !< Timer for VOF
+      
+      !> Provide a pardata and an event tracker for saving restarts
+      type(event)   :: save_evt
+      type(pardata) :: df
+      logical :: restarted
       
    contains
       procedure :: init                            !< Initialize nozzle simulation
@@ -60,31 +69,7 @@ module ligament_class
    end type ligament
    
    
-   !> Hardcode size of buffer layer for VOF removal
-   integer, parameter :: nlayer=5
-   
-
 contains
-   
-   
-   !> Function that defines a level set function for a droplet
-   function levelset_droplet(xyz,t) result(G)
-      implicit none
-      real(WP), dimension(3),intent(in) :: xyz
-      real(WP), intent(in) :: t
-      real(WP) :: G
-      G=0.5_WP-sqrt(xyz(1)**2+xyz(2)**2+xyz(3)**2)
-   end function levelset_droplet
-
-
-   !> Function that defines a level set function for a ligament
-   function levelset_ligament(xyz,t) result(G)
-      implicit none
-      real(WP), dimension(3),intent(in) :: xyz
-      real(WP), intent(in) :: t
-      real(WP) :: G
-      G=0.5_WP-sqrt(xyz(1)**2+xyz(2)**2)
-   end function levelset_ligament
    
    
    !> Initialization of ligament simulation
@@ -125,7 +110,7 @@ contains
          this%cfg=config(grp=group,decomp=partition,grid=grid)
       end block create_config
       
-
+      
       ! Initialize time tracker with 2 subiterations
       initialize_timetracker: block
          use param, only: param_read
@@ -151,7 +136,7 @@ contains
       
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
-         use vfs_class, only: VFlo,VFhi,elvira,r2p
+         use vfs_class, only: remap,VFlo,VFhi,plicnet,r2p
          use mms_geom,  only: cube_refine_vol
          use param,     only: param_read
          integer :: i,j,k,n,si,sj,sk
@@ -160,8 +145,8 @@ contains
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver
-         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2p,name='VOF')
-         ! Initialize to a ligament
+         call this%vf%initialize(cfg=this%cfg,reconstruction_method=plicnet,transport_method=remap,name='VOF')
+         ! Initialize the interface to a drop/ligament
          do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
             do j=this%vf%cfg%jmino_,this%vf%cfg%jmaxo_
                do i=this%vf%cfg%imino_,this%vf%cfg%imaxo_
@@ -211,7 +196,7 @@ contains
       create_iterator: block
          this%vof_removal_layer=iterator(this%cfg,'VOF removal',vof_removal_layer_locator)
       end block create_iterator
-
+      
       
       ! Create a multiphase flow solver with bconds
       create_flow_solver: block
@@ -238,9 +223,9 @@ contains
          call param_read('Pressure iteration',this%ps%maxit)
          call param_read('Pressure tolerance',this%ps%rcvg)
          ! Configure implicit velocity solver
-         !this%vs=ddadi(cfg=this%cfg,name='Velocity',nst=7)
+         this%vs=ddadi(cfg=this%cfg,name='Velocity',nst=7)
          ! Setup the solver
-         call this%fs%setup(pressure_solver=this%ps)!,implicit_solver=this%vs)
+         call this%fs%setup(pressure_solver=this%ps,implicit_solver=this%vs)
          ! Zero initial field
          this%fs%U=0.0_WP; this%fs%V=0.0_WP; this%fs%W=0.0_WP
          ! Apply convective velocity
@@ -249,62 +234,120 @@ contains
             i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
             this%fs%U(i,j,k)=1.0_WP
          end do
-         ! Compute cell-centered velocity
-         call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
+         ! Apply all other boundary conditions
+         call this%fs%apply_bcond(this%time%t,this%time%dt)
+         ! Adjust MFR for global mass balance
+         call this%fs%correct_mfr()
          ! Compute divergence
          call this%fs%get_div()
+         ! Compute cell-centered velocity
+         call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
       end block create_flow_solver
       
       
-      ! Create lpt solver
-      create_lpt_solver: block
-         ! Create the solver
-         this%lp=lpt(cfg=this%cfg,name='spray')
-         ! Get particle density from the flow solver
-         this%lp%rho=this%fs%rho_l
-      end block create_lpt_solver
-      
-      
-      ! Create breakup model
-      !create_breakup: block
-      !   call this%bu%initialize(vf=this%vf,fs=this%fs,lp=this%lp)
-      !end block create_breakup
-      
-
-      ! Create surfmesh object for interface polygon output
-      create_smesh: block
-         use irl_fortran_interface
-         integer :: i,j,k,nplane,np
-         ! Include an extra variable for number of planes
-         this%smesh=surfmesh(nvar=5,name='plic')
-         this%smesh%varname(1)='nplane'
-         this%smesh%varname(2)='curv'
-         this%smesh%varname(3)='edge_sensor'
-         this%smesh%varname(4)='thin_sensor'
-         this%smesh%varname(5)='thickness'
-         ! Transfer polygons to smesh
-         call this%vf%update_surfmesh(this%smesh)
-         ! Also populate nplane variable
-         this%smesh%var(1,:)=1.0_WP
-         np=0
-         do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
-            do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
-               do i=this%vf%cfg%imin_,this%vf%cfg%imax_
-                  do nplane=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
-                     if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
-                        np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
-                        this%smesh%var(2,np)=this%vf%curv2p(nplane,i,j,k)
-                        this%smesh%var(3,np)=this%vf%edge_sensor(i,j,k)
-                        this%smesh%var(4,np)=this%vf%thin_sensor(i,j,k)
-                        this%smesh%var(5,np)=this%vf%thickness  (i,j,k)
+      ! Handle restart/saves here
+      handle_restart: block
+         use param,                 only: param_read
+         use string,                only: str_medium
+         use filesys,               only: makedir,isdir
+         use irl_fortran_interface, only: setNumberOfPlanes,setPlane
+         character(len=str_medium) :: filename
+         integer, dimension(3) :: iopartition
+         real(WP), dimension(:,:,:), allocatable :: P11,P12,P13,P14
+         real(WP), dimension(:,:,:), allocatable :: P21,P22,P23,P24
+         integer :: i,j,k
+         ! Create event for saving restart files
+         this%save_evt=event(this%time,'Restart output')
+         call param_read('Restart output period',this%save_evt%tper)
+         ! Check if we are restarting
+         call param_read('Restart from',filename,default='')
+         this%restarted=.false.; if (len_trim(filename).gt.0) this%restarted=.true.
+         ! Read in the I/O partition
+         call param_read('I/O partition',iopartition)
+         ! Perform pardata initialization
+         if (this%restarted) then
+            ! Read in the file
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,fdata='restart/'//trim(filename))
+            ! Read in the planes directly and set the IRL interface
+            allocate(P11(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P11',var=P11)
+            allocate(P12(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P12',var=P12)
+            allocate(P13(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P13',var=P13)
+            allocate(P14(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P14',var=P14)
+            allocate(P21(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P21',var=P21)
+            allocate(P22(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P22',var=P22)
+            allocate(P23(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P23',var=P23)
+            allocate(P24(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P24',var=P24)
+            do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
+               do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
+                  do i=this%vf%cfg%imin_,this%vf%cfg%imax_
+                     ! Check if the second plane is meaningful
+                     if (this%vf%two_planes.and.P21(i,j,k)**2+P22(i,j,k)**2+P23(i,j,k)**2.gt.0.0_WP) then
+                        call setNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k),2)
+                        call setPlane(this%vf%liquid_gas_interface(i,j,k),0,[P11(i,j,k),P12(i,j,k),P13(i,j,k)],P14(i,j,k))
+                        call setPlane(this%vf%liquid_gas_interface(i,j,k),1,[P21(i,j,k),P22(i,j,k),P23(i,j,k)],P24(i,j,k))
+                     else
+                        call setNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k),1)
+                        call setPlane(this%vf%liquid_gas_interface(i,j,k),0,[P11(i,j,k),P12(i,j,k),P13(i,j,k)],P14(i,j,k))
                      end if
                   end do
                end do
             end do
-         end do
+            call this%vf%sync_interface()
+            deallocate(P11,P12,P13,P14,P21,P22,P23,P24)
+            ! Reset moments
+            call this%vf%reset_volume_moments()
+            ! Update the band
+            call this%vf%update_band()
+            ! Create discontinuous polygon mesh from IRL interface
+            call this%vf%polygonalize_interface()
+            ! Calculate distance from polygons
+            call this%vf%distance_from_polygon()
+            ! Calculate subcell phasic volumes
+            call this%vf%subcell_vol()
+            ! Calculate curvature
+            call this%vf%get_curvature()
+            ! Now read in the velocity solver data
+            call this%df%pull(name='U',var=this%fs%U)
+            call this%df%pull(name='V',var=this%fs%V)
+            call this%df%pull(name='W',var=this%fs%W)
+            call this%df%pull(name='P',var=this%fs%P)
+            call this%df%pull(name='Pjx',var=this%fs%Pjx)
+            call this%df%pull(name='Pjy',var=this%fs%Pjy)
+            call this%df%pull(name='Pjz',var=this%fs%Pjz)
+            ! Apply all other boundary conditions
+            call this%fs%apply_bcond(this%time%t,this%time%dt)
+            ! Compute MFR through all boundary conditions
+            call this%fs%get_mfr()
+            ! Adjust MFR for global mass balance
+            call this%fs%correct_mfr()
+            ! Compute cell-centered velocity
+            call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
+            ! Compute divergence
+            call this%fs%get_div()
+            ! Also update time
+            call this%df%pull(name='t' ,val=this%time%t )
+            call this%df%pull(name='dt',val=this%time%dt)
+            this%time%told=this%time%t-this%time%dt
+            !this%time%dt=this%time%dtmax !< Force max timestep size anyway
+         else
+            ! We are not restarting, prepare a new directory for storing restart files
+            if (this%cfg%amRoot) then
+               if (.not.isdir('restart')) call makedir('restart')
+            end if
+            ! Prepare pardata object for saving restart files
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=15)
+            this%df%valname=['t ','dt']
+            this%df%varname=['U  ','V  ','W  ','P  ','Pjx','Pjy','Pjz','P11','P12','P13','P14','P21','P22','P23','P24']
+         end if
+      end block handle_restart
+      
+      
+      ! Create surfmesh object for interface polygon output
+      create_smesh: block
+         this%smesh=surfmesh(nvar=0,name='plic')
       end block create_smesh
-
-
+      
+      
       ! Add Ensight output
       create_ensight: block
          use param, only: param_read
@@ -318,15 +361,12 @@ contains
          call this%ens_out%add_scalar('VOF',this%vf%VF)
          call this%ens_out%add_scalar('curvature',this%vf%curv)
          call this%ens_out%add_scalar('pressure',this%fs%P)
-         call this%ens_out%add_scalar('thin_sensor',this%vf%thin_sensor)
-         call this%ens_out%add_scalar('edge_sensor',this%vf%edge_sensor)
-         call this%ens_out%add_vector('edge_normal',this%resU,this%resV,this%resW)
          call this%ens_out%add_surface('plic',this%smesh)
          ! Output to ensight
          if (this%ens_evt%occurs()) call this%ens_out%write_data(this%time%t)
       end block create_ensight
       
-
+      
       ! Create a monitor file
       create_monitor: block
          ! Prepare some info about fields
@@ -343,12 +383,11 @@ contains
          call this%mfile%add_column(this%fs%Vmax,'Vmax')
          call this%mfile%add_column(this%fs%Wmax,'Wmax')
          call this%mfile%add_column(this%fs%Pmax,'Pmax')
-         call this%mfile%add_column(this%vf%VFmax,'VOF maximum')
-         call this%mfile%add_column(this%vf%VFmin,'VOF minimum')
          call this%mfile%add_column(this%vf%VFint,'VOF integral')
+         call this%mfile%add_column(this%vf%SDint,'SD integral')
+         call this%mfile%add_column(this%vof_removed,'VOF removed')
          call this%mfile%add_column(this%vf%flotsam_error,'Flotsam error')
          call this%mfile%add_column(this%vf%thinstruct_error,'Film error')
-         call this%mfile%add_column(this%vf%SDint,'SD integral')
          call this%mfile%add_column(this%fs%divmax,'Maximum divergence')
          call this%mfile%add_column(this%fs%psolv%it,'Pressure iteration')
          call this%mfile%add_column(this%fs%psolv%rerr,'Pressure error')
@@ -367,14 +406,96 @@ contains
          call this%cflfile%write()
       end block create_monitor
       
+      
+      ! Create a timing monitor
+      create_timing: block
+         ! Create timers
+         this%tstep =timer(comm=this%cfg%comm,name='Timestep')
+         this%tvof  =timer(comm=this%cfg%comm,name='VOFsolve')
+         this%tvel  =timer(comm=this%cfg%comm,name='Velocity')
+         this%tpres =timer(comm=this%cfg%comm,name='Pressure')
+         ! Create corresponding monitor file
+         this%timefile=monitor(this%fs%cfg%amRoot,'timing')
+         call this%timefile%add_column(this%time%n,'Timestep number')
+         call this%timefile%add_column(this%time%t,'Time')
+         call this%timefile%add_column(this%tstep%time ,trim(this%tstep%name))
+         call this%timefile%add_column(this%tvof%time  ,trim(this%tvof%name))
+         call this%timefile%add_column(this%tvel%time  ,trim(this%tvel%name))
+         call this%timefile%add_column(this%tpres%time ,trim(this%tpres%name))
+      end block create_timing
+      
+      
+   contains
+      
+      
+      !> Function that localizes the x- boundary
+      function xm_locator(pg,i,j,k) result(isIn)
+         use pgrid_class, only: pgrid
+         class(pgrid), intent(in) :: pg
+         integer, intent(in) :: i,j,k
+         logical :: isIn
+         isIn=.false.
+         if (i.eq.pg%imin) isIn=.true.
+      end function xm_locator
+      
+      
+      !> Function that localizes the x+ boundary
+      function xp_locator(pg,i,j,k) result(isIn)
+         use pgrid_class, only: pgrid
+         class(pgrid), intent(in) :: pg
+         integer, intent(in) :: i,j,k
+         logical :: isIn
+         isIn=.false.
+         if (i.eq.pg%imax+1) isIn=.true.
+      end function xp_locator
+      
+      
+      !> Function that localizes region of VOF removal
+      function vof_removal_layer_locator(pg,i,j,k) result(isIn)
+         use pgrid_class, only: pgrid
+         class(pgrid), intent(in) :: pg
+         integer, intent(in) :: i,j,k
+         logical :: isIn
+         isIn=.false.
+         if (i.ge.pg%imax-this%nlayer) isIn=.true.
+      end function vof_removal_layer_locator
+      
+      
+      !> Function that defines a level set function for a droplet
+      function levelset_droplet(xyz,t) result(G)
+         implicit none
+         real(WP), dimension(3),intent(in) :: xyz
+         real(WP), intent(in) :: t
+         real(WP) :: G
+         G=0.5_WP-sqrt(xyz(1)**2+xyz(2)**2+xyz(3)**2)
+      end function levelset_droplet
+      
+      
+      !> Function that defines a level set function for a ligament
+      function levelset_ligament(xyz,t) result(G)
+         implicit none
+         real(WP), dimension(3),intent(in) :: xyz
+         real(WP), intent(in) :: t
+         real(WP) :: G
+         G=0.5_WP-sqrt(xyz(1)**2+xyz(2)**2)
+      end function levelset_ligament
+      
+
    end subroutine init
    
    
    !> Take one time step
    subroutine step(this)
-      use tpns_class, only: arithmetic_visc,harmonic_visc
+      use tpns_class, only: arithmetic_visc
       implicit none
       class(ligament), intent(inout) :: this
+      
+      ! Reset all timers and start timestep timer
+      call this%tstep%reset()
+      call this%tvof%reset()
+      call this%tvel%reset()
+      call this%tpres%reset()
+      call this%tstep%start()
       
       ! Increment time
       call this%fs%get_cfl(this%time%dt,this%time%cfl)
@@ -383,7 +504,7 @@ contains
       
       ! Remember old VOF
       this%vf%VFold=this%vf%VF
-
+      
       ! Remember old velocity
       this%fs%Uold=this%fs%U
       this%fs%Vold=this%fs%V
@@ -391,15 +512,20 @@ contains
       
       ! Prepare old staggered density (at n)
       call this%fs%get_olddensity(vf=this%vf)
-         
+      
       ! VOF solver step
+      call this%tvof%start() ! Start VOF timer
       call this%vf%advance(dt=this%time%dt,U=this%fs%U,V=this%fs%V,W=this%fs%W)
+      call this%tvof%stop() ! Stop VOF timer
       
       ! Prepare new staggered viscosity (at n+1)
       call this%fs%get_viscosity(vf=this%vf,strat=arithmetic_visc)
       
       ! Perform sub-iterations
       do while (this%time%it.le.this%time%itmax)
+         
+         ! Start velocity timer
+         call this%tvel%start()
          
          ! Build mid-time velocity
          this%fs%U=0.5_WP*(this%fs%U+this%fs%Uold)
@@ -428,15 +554,18 @@ contains
          ! Apply boundary conditions
          call this%fs%apply_bcond(this%time%t,this%time%dt)
          
+         ! Stop velocity timer and start pressure timer
+         call this%tvel%stop()
+         call this%tpres%start()
+         
          ! Solve Poisson equation
          call this%fs%update_laplacian()
-         !call this%fs%update_laplacian(pinpoint=[this%fs%cfg%imin,this%fs%cfg%jmin,this%fs%cfg%kmin])
          call this%fs%correct_mfr()
          call this%fs%get_div()
-         !call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
-         call this%fs%add_surface_tension_jump_thin(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         !call this%fs%add_surface_tension_jump_thin(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         !call this%fs%add_surface_tension_jump_twoVF(dt=this%time%dt,div=this%fs%div,vf=this%vf)
          this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div/this%time%dt
-         !if (this%cfg%amRoot) this%fs%psolv%rhs(this%cfg%imin,this%cfg%jmin,this%cfg%kmin)=0.0_WP
          this%fs%psolv%sol=0.0_WP
          call this%fs%psolv%solve()
          call this%fs%shift_p(this%fs%psolv%sol)
@@ -451,6 +580,9 @@ contains
          ! Apply boundary conditions
          call this%fs%apply_bcond(this%time%t,this%time%dt)
          
+         ! Stop pressure timer
+         call this%tpres%stop()
+         
          ! Increment sub-iteration counter
          this%time%it=this%time%it+1
          
@@ -462,57 +594,98 @@ contains
       
       ! Remove VOF at edge of domain
       remove_vof: block
-         integer :: n
+         use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
+         use parallel, only: MPI_REAL_WP
+         integer :: n,i,j,k,ierr
+         this%vof_removed=0.0_WP
          do n=1,this%vof_removal_layer%no_
-            this%vf%VF(this%vof_removal_layer%map(1,n),this%vof_removal_layer%map(2,n),this%vof_removal_layer%map(3,n))=0.0_WP
+            i=this%vof_removal_layer%map(1,n)
+            j=this%vof_removal_layer%map(2,n)
+            k=this%vof_removal_layer%map(3,n)
+            if (n.le.this%vof_removal_layer%n_) this%vof_removed=this%vof_removed+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
+            this%vf%VF(i,j,k)=0.0_WP
          end do
+         call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_removed,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+         call this%vf%clean_irl_and_band()
       end block remove_vof
       
       ! Output to ensight
       if (this%ens_evt%occurs()) then
-         ! Update surfmesh object
-         update_smesh: block
-            use irl_fortran_interface
-            integer :: i,j,k,nplane,np
-            ! Transfer polygons to smesh
-            call this%vf%update_surfmesh(this%smesh)
-            ! Also populate nplane variable
-            this%smesh%var(1,:)=1.0_WP
-            np=0
-            do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
-               do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
-                  do i=this%vf%cfg%imin_,this%vf%cfg%imax_
-                     do nplane=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
-                        if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
-                           np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
-                           this%smesh%var(2,np)=this%vf%curv2p(nplane,i,j,k)
-                           this%smesh%var(3,np)=this%vf%edge_sensor(i,j,k)
-                           this%smesh%var(4,np)=this%vf%thin_sensor(i,j,k)
-                           this%smesh%var(5,np)=this%vf%thickness  (i,j,k)
-                        end if
-                     end do
-                  end do
-               end do
-            end do
-         end block update_smesh
-         ! Transfer edge normal data
-         this%resU=this%vf%edge_normal(1,:,:,:)
-         this%resV=this%vf%edge_normal(2,:,:,:)
-         this%resW=this%vf%edge_normal(3,:,:,:)
-         ! Perform ensight output
+         call this%vf%update_surfmesh(this%smesh)
          call this%ens_out%write_data(this%time%t)
       end if
+      
+      ! Stop timestep timer
+      call this%tstep%stop()
       
       ! Perform and output monitoring
       call this%fs%get_max()
       call this%vf%get_max()
       call this%mfile%write()
       call this%cflfile%write()
+      call this%timefile%write()
       
+      ! Finally, see if it's time to save restart files
+      if (this%save_evt%occurs()) then
+         save_restart: block
+            use irl_fortran_interface
+            use string, only: str_medium
+            character(len=str_medium) :: timestamp
+            real(WP), dimension(:,:,:), allocatable :: P11,P12,P13,P14
+            real(WP), dimension(:,:,:), allocatable :: P21,P22,P23,P24
+            integer :: i,j,k
+            real(WP), dimension(4) :: plane
+            ! Handle IRL data
+            allocate(P11(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+            allocate(P12(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+            allocate(P13(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+            allocate(P14(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+            allocate(P21(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+            allocate(P22(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+            allocate(P23(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+            allocate(P24(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+            do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
+               do j=this%vf%cfg%jmino_,this%vf%cfg%jmaxo_
+                  do i=this%vf%cfg%imino_,this%vf%cfg%imaxo_
+                     ! First plane
+                     plane=getPlane(this%vf%liquid_gas_interface(i,j,k),0)
+                     P11(i,j,k)=plane(1); P12(i,j,k)=plane(2); P13(i,j,k)=plane(3); P14(i,j,k)=plane(4)
+                     ! Second plane
+                     plane=0.0_WP
+                     if (getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)).eq.2) plane=getPlane(this%vf%liquid_gas_interface(i,j,k),1)
+                     P21(i,j,k)=plane(1); P22(i,j,k)=plane(2); P23(i,j,k)=plane(3); P24(i,j,k)=plane(4)
+                  end do
+               end do
+            end do
+            ! Prefix for files
+            write(timestamp,'(es12.5)') this%time%t
+            ! Populate df and write it
+            call this%df%push(name='t'  ,val=this%time%t )
+            call this%df%push(name='dt' ,val=this%time%dt)
+            call this%df%push(name='U'  ,var=this%fs%U   )
+            call this%df%push(name='V'  ,var=this%fs%V   )
+            call this%df%push(name='W'  ,var=this%fs%W   )
+            call this%df%push(name='P'  ,var=this%fs%P   )
+            call this%df%push(name='Pjx',var=this%fs%Pjx )
+            call this%df%push(name='Pjy',var=this%fs%Pjy )
+            call this%df%push(name='Pjz',var=this%fs%Pjz )
+            call this%df%push(name='P11',var=P11         )
+            call this%df%push(name='P12',var=P12         )
+            call this%df%push(name='P13',var=P13         )
+            call this%df%push(name='P14',var=P14         )
+            call this%df%push(name='P21',var=P21         )
+            call this%df%push(name='P22',var=P22         )
+            call this%df%push(name='P23',var=P23         )
+            call this%df%push(name='P24',var=P24         )
+            call this%df%write(fdata='restart/data_'//trim(adjustl(timestamp)))
+            ! Deallocate
+            deallocate(P11,P12,P13,P14,P21,P22,P23,P24)
+         end block save_restart
+      end if
       
    end subroutine step
    
-
+   
    !> Finalize nozzle simulation
    subroutine final(this)
       implicit none
@@ -522,39 +695,6 @@ contains
       deallocate(this%resU,this%resV,this%resW,this%Ui,this%Vi,this%Wi)
       
    end subroutine final
-   
-   
-   !> Function that localizes the x- boundary
-   function xm_locator(pg,i,j,k) result(isIn)
-      use pgrid_class, only: pgrid
-      class(pgrid), intent(in) :: pg
-      integer, intent(in) :: i,j,k
-      logical :: isIn
-      isIn=.false.
-      if (i.eq.pg%imin) isIn=.true.
-   end function xm_locator
-
-
-   !> Function that localizes the x+ boundary
-   function xp_locator(pg,i,j,k) result(isIn)
-      use pgrid_class, only: pgrid
-      class(pgrid), intent(in) :: pg
-      integer, intent(in) :: i,j,k
-      logical :: isIn
-      isIn=.false.
-      if (i.eq.pg%imax+1) isIn=.true.
-   end function xp_locator
-   
-   
-   !> Function that localizes region of VOF removal
-   function vof_removal_layer_locator(pg,i,j,k) result(isIn)
-      use pgrid_class, only: pgrid
-      class(pgrid), intent(in) :: pg
-      integer, intent(in) :: i,j,k
-      logical :: isIn
-      isIn=.false.
-      if (i.ge.pg%imax-nlayer) isIn=.true.
-   end function vof_removal_layer_locator
    
    
 end module ligament_class

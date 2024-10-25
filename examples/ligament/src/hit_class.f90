@@ -6,6 +6,8 @@ module hit_class
    use incomp_class,      only: incomp
    use timetracker_class, only: timetracker
    use monitor_class,     only: monitor
+   use pardata_class,     only: pardata
+   use event_class,       only: event
    implicit none
    private
    
@@ -35,6 +37,10 @@ module hit_class
       real(WP) :: Urms,tke,eps,Ret,Rel,eta,ell  ! Current turbulence parameters (ell is large eddy size)
       !> Forcing constant
       real(WP) :: forcing
+      !> Provide a pardata object for restarts
+      logical       :: restarted
+      type(pardata) :: df
+      type(event)   :: save_evt
    contains
       procedure, private :: compute_stats          !< Turbulence information
       procedure :: init                            !< Initialize HIT simulation
@@ -224,6 +230,49 @@ contains
       end block initialize_velocity
       
       
+      ! Handle restart here
+      perform_restart: block
+         use param,   only: param_read
+         use string,  only: str_medium
+         use filesys, only: makedir,isdir
+         character(len=str_medium) :: filename
+         integer, dimension(3) :: iopartition
+         ! Create event for saving restart files
+         this%save_evt=event(this%time,'HIT restart output')
+         call param_read('Restart output period',this%save_evt%tper)
+         ! Read in the partition for I/O
+         call param_read('I/O partition',iopartition)
+         ! Check if a restart file was provided
+         call param_read('HIT restart',filename,default='')
+         this%restarted=.false.; if (len_trim(filename).gt.0) this%restarted=.true.
+         ! Perform pardata initialization
+         if (this%restarted) then
+            ! Read in the file
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,fdata='restart/'//trim(filename))
+            ! Put the data at the right place
+            call this%df%pull(name='U',var=this%fs%U)
+            call this%df%pull(name='V',var=this%fs%V)
+            call this%df%pull(name='W',var=this%fs%W)
+            call this%df%pull(name='P',var=this%fs%P)
+            ! Update divergence
+            call this%fs%get_div()
+            ! Also update time
+            call this%df%pull(name='t' ,val=this%time%t )
+            call this%df%pull(name='dt',val=this%time%dt)
+            this%time%told=this%time%t-this%time%dt
+            !this%time%dt=this%time%dtmax !< Force max timestep size anyway
+         else
+            ! Prepare a new directory for storing files for restart
+            if (this%cfg%amRoot) then
+               if (.not.isdir('restart')) call makedir('restart')
+            end if
+            ! If we are not restarting, we will still need a datafile for saving restart files
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=4)
+            this%df%valname=['dt','t ']; this%df%varname=['U','V','W','P']
+         end if
+      end block perform_restart
+
+      
       ! Create monitoring file
       create_monitor: block
          ! Prepare some info about turbulence
@@ -250,7 +299,7 @@ contains
       
    end subroutine init
    
-
+   
    !> Take one time step with specified dt
    subroutine step(this,dt)
       implicit none
@@ -311,7 +360,7 @@ contains
             this%resV=this%resV+A*this%time%dt*(this%fs%V-this%meanV)
             this%resW=this%resW+A*this%time%dt*(this%fs%W-this%meanW)
          end block hit_forcing
-
+         
          ! Apply these residuals
          this%fs%U=2.0_WP*this%fs%U-this%fs%Uold+this%resU
          this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV
@@ -344,9 +393,27 @@ contains
       call this%compute_stats()
       call this%mfile%write()
       
+      ! Finally, see if it's time to save restart files
+      if (this%save_evt%occurs()) then
+         save_restart: block
+            use string, only: str_medium
+            character(len=str_medium) :: timestamp
+            ! Prefix for files
+            write(timestamp,'(es12.5)') this%time%t
+            ! Populate df and write it
+            call this%df%push(name='t' ,val=this%time%t )
+            call this%df%push(name='dt',val=this%time%dt)
+            call this%df%push(name='U' ,var=this%fs%U   )
+            call this%df%push(name='V' ,var=this%fs%V   )
+            call this%df%push(name='W' ,var=this%fs%W   )
+            call this%df%push(name='P' ,var=this%fs%P   )
+            call this%df%write(fdata='restart/hit_'//trim(adjustl(timestamp)))
+         end block save_restart
+      end if
+      
    end subroutine step
    
-
+   
    !> Finalize nozzle simulation
    subroutine final(this)
       implicit none
@@ -357,5 +424,5 @@ contains
       
    end subroutine final
    
-
+   
 end module hit_class

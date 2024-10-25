@@ -492,7 +492,7 @@ contains
          call this%vf%initialize(cfg=this%cfg,reconstruction_method=plicnet,transport_method=remap,name='VOF')
          !this%vf%twoplane_thld2=0.3_WP
          !this%vf%thin_thld_min=1.0e-3_WP
-         ! Initialize the interface inclduing restarts
+         ! Initialize the interface including restarts
          if (this%restarted) then
             ! Read in the planes directly and set the IRL interface
             allocate(P11(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P11',var=P11)
@@ -937,15 +937,15 @@ contains
       call this%fs%get_olddensity(vf=this%vf)
       
       ! VOF solver step
-      call this%tvof%start() !< Start VOF timer
+      call this%tvof%start() ! Start VOF timer
       call this%vf%advance(dt=this%time%dt,U=this%fs%U,V=this%fs%V,W=this%fs%W)
-      call this%tvof%stop() !< Stop VOF timer
+      call this%tvof%stop() ! Stop VOF timer
       
       ! Prepare new staggered viscosity (at n+1)
       call this%fs%get_viscosity(vf=this%vf,strat=arithmetic_visc)
       
       ! Turbulence modeling
-      call this%tsgs%start() !< Start SGS timer
+      call this%tsgs%start() ! Start SGS timer
       sgs_modeling: block
          use sgsmodel_class, only: vreman,dynamic_smag
          integer :: i,j,k
@@ -961,12 +961,12 @@ contains
             this%fs%visc_zx(i,j,k)=this%fs%visc_zx(i,j,k)+sum(this%fs%itp_xz(:,:,i,j,k)*this%sgs%visc(i-1:i,j,k-1:k))
          end do; end do; end do
       end block sgs_modeling
-      call this%tsgs%stop() !< Stop SGS timer
+      call this%tsgs%stop() ! Stop SGS timer
       
       ! Perform sub-iterations
       do while (this%time%it.le.this%time%itmax)
          
-         !> Start velocity timer
+         ! Start velocity timer
          call this%tvel%start()
          
          ! Build mid-time velocity
@@ -1012,11 +1012,11 @@ contains
             call this%fs%cfg%sync(this%fs%V)
             call this%fs%cfg%sync(this%fs%W)
          end block ibforcing
-        
+         
          ! Apply other boundary conditions on the resulting fields
          call this%fs%apply_bcond(this%time%t,this%time%dt)
          
-         !> Stop velocity timer and start pressure timer
+         ! Stop velocity timer and start pressure timer
          call this%tvel%stop()
          call this%tpres%start()
          
@@ -1039,7 +1039,7 @@ contains
          this%fs%V=this%fs%V-this%time%dt*this%resV/this%fs%rho_V
          this%fs%W=this%fs%W-this%time%dt*this%resW/this%fs%rho_W
          
-         !> Stop pressure timer
+         ! Stop pressure timer
          call this%tpres%stop()
          
          ! Increment sub-iteration counter
@@ -1052,9 +1052,9 @@ contains
       call this%fs%get_div()
       
       ! Transfer VOF into droplets
-      call this%ttrans%start() !< Start transfer timer
+      call this%ttrans%start() ! Start transfer timer
       call this%transfer_drops()
-      call this%ttrans%stop() !< Stop transfer timer
+      call this%ttrans%stop() ! Stop transfer timer
       
       ! Remove VOF at edge of domain
       remove_vof: block
@@ -1111,7 +1111,7 @@ contains
       ! Output flow rate
       if (this%flowrate_evt%occurs()) call this%analyze_flowrate()
       
-      !> Stop timestep timer
+      ! Stop timestep timer
       call this%tstep%stop()
       
       ! Perform and output monitoring
