@@ -7,7 +7,7 @@ module simplex_class
    use surfmesh_class,    only: surfmesh
    use ensight_class,     only: ensight
    use hypre_str_class,   only: hypre_str
-   use ddadi_class,       only: ddadi
+   !use ddadi_class,       only: ddadi
    use tpns_class,        only: tpns
    use vfs_class,         only: vfs
    use cclabel_class,     only: cclabel
@@ -42,7 +42,7 @@ module simplex_class
       type(vfs)         :: vf    !< Volume fraction solver
       type(tpns)        :: fs    !< Two-phase flow solver
       type(hypre_str)   :: ps    !< HYPRE linear solver for pressure
-      type(ddadi)       :: vs    !< DDADI linear solver for velocity
+      !type(ddadi)       :: vs    !< DDADI linear solver for velocity
       type(sgsmodel)    :: sgs   !< SGS model for eddy viscosity
       type(timetracker) :: time  !< Time info
       type(cclabel)     :: ccl   !< CCLabel to transfer droplets
@@ -614,21 +614,26 @@ contains
          call this%fs%add_bcond(name='inlets',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=pipe_inlets)
          call this%fs%add_bcond(name='coflow',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=coflow_inlet)
          ! Outflow on the right
-         call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.false.,locator=right_boundary)
+         !call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.false.,locator=right_boundary)
+         call this%fs%add_bcond(name='outflow',type=clipped_neumann,face='x',dir=+1,canCorrect=.true.,locator=right_boundary)
          ! Slip on the sides
-         call this%fs%add_bcond(name='bc_yp',type=slip,face='y',dir=+1,canCorrect=.true.,locator=yp_locator)
-         call this%fs%add_bcond(name='bc_ym',type=slip,face='y',dir=-1,canCorrect=.true.,locator=ym_locator)
-         call this%fs%add_bcond(name='bc_zp',type=slip,face='z',dir=+1,canCorrect=.true.,locator=zp_locator)
-         call this%fs%add_bcond(name='bc_zm',type=slip,face='z',dir=-1,canCorrect=.true.,locator=zm_locator)
+         !call this%fs%add_bcond(name='bc_yp',type=slip,face='y',dir=+1,canCorrect=.true.,locator=yp_locator)
+         !call this%fs%add_bcond(name='bc_ym',type=slip,face='y',dir=-1,canCorrect=.true.,locator=ym_locator)
+         !call this%fs%add_bcond(name='bc_zp',type=slip,face='z',dir=+1,canCorrect=.true.,locator=zp_locator)
+         !call this%fs%add_bcond(name='bc_zm',type=slip,face='z',dir=-1,canCorrect=.true.,locator=zm_locator)
+         call this%fs%add_bcond(name='bc_yp',type=slip,face='y',dir=+1,canCorrect=.false.,locator=yp_locator)
+         call this%fs%add_bcond(name='bc_ym',type=slip,face='y',dir=-1,canCorrect=.false.,locator=ym_locator)
+         call this%fs%add_bcond(name='bc_zp',type=slip,face='z',dir=+1,canCorrect=.false.,locator=zp_locator)
+         call this%fs%add_bcond(name='bc_zm',type=slip,face='z',dir=-1,canCorrect=.false.,locator=zm_locator)
          ! Configure pressure solver
          this%ps=hypre_str(cfg=this%cfg,name='Pressure',method=pcg_pfmg2,nst=7)
          this%ps%maxlevel=16
          call this%input%read('Pressure iteration',this%ps%maxit)
          call this%input%read('Pressure tolerance',this%ps%rcvg)
          ! Configure velocity solver
-         this%vs=ddadi(cfg=this%cfg,name='Velocity',nst=7)
+         !this%vs=ddadi(cfg=this%cfg,name='Velocity',nst=7)
          ! Setup the solver
-         call this%fs%setup(pressure_solver=this%ps,implicit_solver=this%vs)
+         call this%fs%setup(pressure_solver=this%ps)!,implicit_solver=this%vs)
       end block create_flow_solver
       
       

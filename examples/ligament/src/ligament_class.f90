@@ -63,9 +63,9 @@ module ligament_class
       logical :: restarted
       
    contains
-      procedure :: init                            !< Initialize nozzle simulation
-      procedure :: step                            !< Advance nozzle simulation by one time step
-      procedure :: final                           !< Finalize nozzle simulation
+      procedure :: init     !< Initialize nozzle simulation
+      procedure :: step     !< Advance nozzle simulation by one time step
+      procedure :: final    !< Finalize nozzle simulation
    end type ligament
    
    

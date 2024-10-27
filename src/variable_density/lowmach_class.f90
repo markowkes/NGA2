@@ -825,6 +825,11 @@ contains
          ! Initialize the implicit velocity solver
          call this%implicit%init()
          
+      else
+         
+         ! Point to implicit solver linsol object
+         this%implicit=>NULL()
+         
       end if
       
    end subroutine setup
@@ -1975,6 +1980,23 @@ contains
       integer :: i,j,k
       real(WP) :: rhoUp,rhoUm,rhoVp,rhoVm,rhoWp,rhoWm
       
+      ! If no implicit solver available, just divide by density and return
+      if (.not.associated(this%implicit)) then
+         do k=this%cfg%kmin_,this%cfg%kmax_
+            do j=this%cfg%jmin_,this%cfg%jmax_
+               do i=this%cfg%imin_,this%cfg%imax_
+                  resU(i,j,k)=resU(i,j,k)/sum(this%itpr_x(:,i,j,k)*this%rho(i-1:i,j,k))
+                  resV(i,j,k)=resV(i,j,k)/sum(this%itpr_y(:,i,j,k)*this%rho(i,j-1:j,k))
+                  resW(i,j,k)=resW(i,j,k)/sum(this%itpr_z(:,i,j,k)*this%rho(i,j,k-1:k))
+               end do
+            end do
+         end do
+         call this%cfg%sync(resU)
+         call this%cfg%sync(resV)
+         call this%cfg%sync(resW)
+         return
+      end if
+      
       ! Solve implicit U problem
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
@@ -2145,11 +2167,6 @@ contains
       this%implicit%sol=0.0_WP
       call this%implicit%solve()
       resW=this%implicit%sol
-      
-      ! Sync up all residuals
-      call this%cfg%sync(resU)
-      call this%cfg%sync(resV)
-      call this%cfg%sync(resW)
       
    end subroutine solve_implicit
    

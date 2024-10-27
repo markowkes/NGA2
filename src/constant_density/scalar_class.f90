@@ -422,6 +422,11 @@ contains
          ! Initialize the implicit velocity solver
          call this%implicit%init()
          
+      else
+         
+         ! Point to implicit solver linsol object
+         this%implicit=>NULL()
+         
       end if
       
    end subroutine setup
@@ -635,6 +640,13 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in)    :: rhoW  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k,sti,std
       
+      ! If no implicit solver available, just divide by density and return
+      if (.not.associated(this%implicit)) then
+         resSC=resSC/this%rho
+         call this%cfg%sync(resSC)
+         return
+      end if
+
       ! Prepare convective operator
       this%implicit%opr(1,:,:,:)=this%rho; this%implicit%opr(2:,:,:,:)=0.0_WP
       do k=this%cfg%kmin_,this%cfg%kmax_
@@ -685,9 +697,6 @@ contains
       this%implicit%sol=0.0_WP
       call this%implicit%solve()
       resSC=this%implicit%sol
-      
-      ! Sync up residual
-      call this%cfg%sync(resSC)
       
    end subroutine solve_implicit
    
