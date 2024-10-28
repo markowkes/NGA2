@@ -1917,17 +1917,17 @@ contains
             ! Implement based on bcond direction, loop over all cell
             select case (my_bc%face)
             case ('x')
-               do n=1,my_bc%itr%no_
+               do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
                   this%rhoU(i,j,k)=this%rhoU(i,j,k)+my_bc%rdir*mom_correction
                end do
             case ('y')
-               do n=1,my_bc%itr%no_
+               do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
                   this%rhoV(i,j,k)=this%rhoV(i,j,k)+my_bc%rdir*mom_correction
                end do
             case ('z')
-               do n=1,my_bc%itr%no_
+               do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
                   this%rhoW(i,j,k)=this%rhoW(i,j,k)+my_bc%rdir*mom_correction
                end do
@@ -1939,6 +1939,11 @@ contains
          my_bc=>my_bc%next
          
       end do
+      
+      ! Sync full fields
+      call this%cfg%sync(this%rhoU)
+      call this%cfg%sync(this%rhoV)
+      call this%cfg%sync(this%rhoW)
       
    end subroutine correct_mfr
    

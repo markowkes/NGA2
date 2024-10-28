@@ -1739,17 +1739,17 @@ contains
             ! Implement based on bcond direction, loop over all cell
             select case (my_bc%face)
             case ('x')
-               do n=1,my_bc%itr%no_
+               do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
                   this%U(i,j,k)=this%U(i,j,k)+my_bc%rdir*vel_correction
                end do
             case ('y')
-               do n=1,my_bc%itr%no_
+               do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
                   this%V(i,j,k)=this%V(i,j,k)+my_bc%rdir*vel_correction
                end do
             case ('z')
-               do n=1,my_bc%itr%no_
+               do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
                   this%W(i,j,k)=this%W(i,j,k)+my_bc%rdir*vel_correction
                end do
@@ -1761,6 +1761,11 @@ contains
          my_bc=>my_bc%next
          
       end do
+      
+      ! Sync full fields
+      call this%cfg%sync(this%U)
+      call this%cfg%sync(this%V)
+      call this%cfg%sync(this%W)
       
    end subroutine correct_mfr
    
