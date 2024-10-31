@@ -704,6 +704,7 @@ contains
          call this%ens_out%add_vector('velocity',this%Ui,this%Vi,this%Wi)
          call this%ens_out%add_scalar('VOF',this%vf%VF)
          call this%ens_out%add_scalar('pressure',this%fs%P)
+         call this%ens_out%add_scalar('visc_sgs',this%sgs%visc)
          call this%ens_out%add_scalar('divergence',this%fs%div)
          call this%ens_out%add_surface('plic',this%smesh)
          ! Output to ensight
