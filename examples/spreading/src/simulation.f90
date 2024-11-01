@@ -474,8 +474,10 @@ contains
          !      do j=fs%cfg%jmin_,fs%cfg%jmax_+1
          !         do i=fs%cfg%imin_,fs%cfg%imax_+1
          !            ! Check if there is a wall in y-
-         !           if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i-1,j-1,k).eq.1) fs%U(i,j-1,k)=0.0_WP
+         !            if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i-1,j-1,k).eq.1) fs%U(i,j-1,k)=0.0_WP
          !            if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i,j-1,k-1).eq.1) fs%W(i,j-1,k)=0.0_WP
+         !            if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i-1,j-1,k).eq.1) fs%Uold(i,j-1,k)=0.0_WP
+         !            if (fs%mask(i,j-1,k).eq.1.and.fs%mask(i,j-1,k-1).eq.1) fs%Wold(i,j-1,k)=0.0_WP
          !         end do
          !      end do
          !   end do

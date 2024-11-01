@@ -908,7 +908,7 @@ contains
    
    !> Take one time step
    subroutine step(this)
-      use tpns_class, only: harmonic_visc
+      use tpns_class, only: arithmetic_visc
       implicit none
       class(simplex), intent(inout) :: this
       
@@ -943,7 +943,7 @@ contains
       call this%tvof%stop() ! Stop VOF timer
       
       ! Prepare new staggered viscosity (at n+1)
-      call this%fs%get_viscosity(vf=this%vf,strat=harmonic_visc)
+      call this%fs%get_viscosity(vf=this%vf,strat=arithmetic_visc)
       
       ! Turbulence modeling
       call this%tsgs%start() ! Start SGS timer
