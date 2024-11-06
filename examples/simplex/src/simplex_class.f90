@@ -188,11 +188,12 @@ contains
       use mathtools, only: pi
       class(simplex), intent(inout) :: this
       real(WP), dimension(:)    , allocatable :: dvol
-      real(WP), dimension(:,:)  , allocatable :: dpos,dvel,dlen
+      real(WP), dimension(:,:)  , allocatable :: dpos
+      real(WP), dimension(:,:)  , allocatable :: dvel
       real(WP), dimension(:,:,:), allocatable :: dmoi
       real(WP), dimension(:)    , allocatable :: drem
       integer :: n,m,ierr,i,j,k,nmax
-      real(WP) :: x,y,z,x0,y0,z0,diam,ecc,lmax,lmin
+      real(WP) :: x,y,z,x0,y0,z0,diam,ecc,lmax,lmid,lmin
       logical :: transfer
       ! Moment of inertia calculation using lapack
       real(WP), dimension(:), allocatable, save :: work !< Saved!
@@ -216,7 +217,6 @@ contains
       allocate(dpos(1:this%ccl%nstruct,1:3    )); dpos=0.0_WP
       allocate(dvel(1:this%ccl%nstruct,1:3    )); dvel=0.0_WP
       allocate(dmoi(1:this%ccl%nstruct,1:3,1:3)); dmoi=0.0_WP
-      allocate(dlen(1:this%ccl%nstruct,1:3    )); dlen=0.0_WP
       allocate(drem(1:this%ccl%nstruct        )); drem=0.0_WP
       
       ! First pass to accumulate volume, position, and velocity
@@ -284,14 +284,6 @@ contains
          if (this%vf%cfg%zper.and.dpos(n,3).lt.this%vf%cfg%z(this%vf%cfg%kmin)) dpos(n,3)=dpos(n,3)+this%vf%cfg%zL
          ! Get drop velocity
          dvel(n,:)=dvel(n,:)/dvol(n)
-         ! Get eigenvalues/eigenvectors of moment of inertia tensor
-         A=dmoi(n,:,:)
-         call dsyev('V','U',3,A,3,d,work,lwork,info) !< On exit, A contains eigenvectors and d contains eigenvalues in ascending order
-         d=max(0.0_WP,d)                             !< Get rid of very small negative values (due to machine accuracy)
-         ! Store droplet's characteristic lengths (1>2>3)
-         dlen(n,1)=sqrt(5.0_WP/2.0_WP*abs(d(2)+d(3)-d(1))/dvol(n))
-         dlen(n,2)=sqrt(5.0_WP/2.0_WP*abs(d(3)+d(1)-d(2))/dvol(n))
-         dlen(n,3)=sqrt(5.0_WP/2.0_WP*abs(d(1)+d(2)-d(3))/dvol(n))
       end do
       
       ! Find the liquid core
@@ -315,10 +307,15 @@ contains
             ! Small enough to transfer automatically
             transfer=.true.
          else
-            ! In between, check eccentricity
-            lmin=dlen(n,3)
-            if (lmin.eq.0.0_WP) lmin=dlen(n,2) ! Handle 2D case
-            lmax=dlen(n,1)
+            ! In between, check eccentricity from moment of inertia tensor
+            A=dmoi(n,:,:)
+            call dsyev('V','U',3,A,3,d,work,lwork,info) !< On exit, A contains eigenvectors and d contains eigenvalues in ascending order
+            d=max(0.0_WP,d)                             !< Get rid of very small negative values (due to machine accuracy)
+            ! Get characteristic lengths of drop
+            lmax=sqrt(5.0_WP/2.0_WP*abs(d(2)+d(3)-d(1))/dvol(n))
+            lmid=sqrt(5.0_WP/2.0_WP*abs(d(3)+d(1)-d(2))/dvol(n))
+            lmin=sqrt(5.0_WP/2.0_WP*abs(d(1)+d(2)-d(3))/dvol(n))
+            if (lmin.eq.0.0_WP) lmin=lmid ! Handle 2D case
             ecc=sqrt(1.0_WP-lmin**2/(lmax**2+epsilon(1.0_WP)))
             if (ecc.gt.this%emax) then
                ! Too eccentric to transfer yet
@@ -377,7 +374,7 @@ contains
       call this%lp%sync()
       
       ! Deallocate all but work array
-      deallocate(dvol,dpos,dvel,dmoi,dlen,drem)
+      deallocate(dvol,dpos,dvel,dmoi,drem)
       
    contains
       
