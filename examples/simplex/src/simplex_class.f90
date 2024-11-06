@@ -297,8 +297,9 @@ contains
       ! Find the liquid core
       nmax=maxloc(dvol,dim=1)
       
-      ! Zero out transfered volume
+      ! Zero out monitoring variables
       this%vof_transfered=0.0_WP
+      this%lp%np_new=0
       
       ! Transfer drops based on our criteria
       do n=1,this%ccl%nstruct
@@ -360,8 +361,9 @@ contains
                this%vf%VF(this%ccl%struct(n)%map(1,m),this%ccl%struct(n)%map(2,m),this%ccl%struct(n)%map(3,m))=0.0_WP
             end do
             
-            ! Increment vof_transfered
+            ! Increment monitoring variables
             this%vof_transfered=this%vof_transfered+dvol(n)
+            this%lp%np_new=this%lp%np_new+1
 
          end if
          
