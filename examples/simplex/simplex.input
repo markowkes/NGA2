@@ -17,24 +17,19 @@ Stretch ratio in yz :   1.05
 
 # Flow conditions
 Mass flow rate : 1.79e-3   # nominal flow rate in kg/s at 50 psig
-Coflow velocity : 0
+Coflow velocity : 0.5
 
 # Fluid properties
 Gravity :                     9.81 0 0
 Gas density :                 1.226
 Gas dynamic viscosity :       1.780e-5
-# Water
-# Liquid density :              1000
-# Liquid dynamic viscosity :    1.137e-3 
-# Surface tension coefficient : 0.0728
-# Methanol
-# Liquid density :              790
-# Liquid dynamic viscosity :    0.594e-3 
-# Surface tension coefficient : 0.0225
-# MIL-PRF-7024
-Liquid density :              770
-Liquid dynamic viscosity :    0.924e-3 
-Surface tension coefficient : 0.024
+# Liquid                      MIL-PRF-7024  # Methanol    # Water
+Liquid density :              770           # 790         # 1000
+Liquid dynamic viscosity :    0.924e-3      # 0.594e-3    # 1.137e-3
+Surface tension coefficient : 0.024         # 0.0225      # 0.0728
+
+# Break-up model
+Transfer drops : .true.
 
 # Time integration
 Max timestep size : 2e-6
@@ -49,4 +44,4 @@ Ensight output period : 1e-4
 Restart output period : 1e-3
 
 # Data restart
-Restart from : data_3.50007E-02
+Restart from : 3.50007E-02

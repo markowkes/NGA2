@@ -70,9 +70,9 @@ contains
       class(partmesh), intent(inout) :: this
       integer, intent(in) :: size
       this%n=size
-      allocate(this%pos(        3          ,this%n))
-      allocate(this%vec(        3,this%nvec,this%n))
-      allocate(this%var(this%nvar          ,this%n))
+      allocate(this%pos(        3          ,this%n)); this%pos=0.0_WP
+      allocate(this%vec(        3,this%nvec,this%n)); this%vec=0.0_WP
+      allocate(this%var(          this%nvar,this%n)); this%var=0.0_WP
    end subroutine set_size
    
    

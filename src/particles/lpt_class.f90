@@ -1375,12 +1375,12 @@ contains
             pmesh%pos(:,i)=this%p(i)%pos
          end do
       end if
-      ! Root adds a particle if there are none
+      ! Root adds two fake particles if there are none to handle Paraview visualization bugs
       if (this%np.eq.0.and.this%cfg%amRoot) then
-         call pmesh%set_size(1)
-         pmesh%pos(1,1)=this%cfg%x(this%cfg%imin)
-         pmesh%pos(2,1)=this%cfg%y(this%cfg%jmin)
-         pmesh%pos(3,1)=this%cfg%z(this%cfg%kmin)
+         call pmesh%set_size(2)
+         pmesh%pos(1,:)=this%cfg%x(this%cfg%imin)
+         pmesh%pos(2,:)=this%cfg%y(this%cfg%jmin)
+         pmesh%pos(3,:)=this%cfg%z(this%cfg%kmin)
       end if
    end subroutine update_partmesh
    
