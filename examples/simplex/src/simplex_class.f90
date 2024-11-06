@@ -183,15 +183,17 @@ contains
    
    !> Transfer droplet to Lagrangian representation
    subroutine transfer_drops(this)
-      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
+      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_MAX,MPI_IN_PLACE
       use parallel,  only: MPI_REAL_WP
       use mathtools, only: pi
       class(simplex), intent(inout) :: this
       real(WP), dimension(:)    , allocatable :: dvol
       real(WP), dimension(:,:)  , allocatable :: dpos,dvel,dlen
       real(WP), dimension(:,:,:), allocatable :: dmoi
-      integer :: n,m,ierr,i,j,k
+      real(WP), dimension(:)    , allocatable :: drem
+      integer :: n,m,ierr,i,j,k,nmax
       real(WP) :: x,y,z,x0,y0,z0,diam,ecc,lmax,lmin
+      logical :: transfer
       ! Moment of inertia calculation using lapack
       real(WP), dimension(:), allocatable, save :: work !< Saved!
       integer, save :: lwork                            !< Saved!
@@ -215,6 +217,7 @@ contains
       allocate(dvel(1:this%ccl%nstruct,1:3    )); dvel=0.0_WP
       allocate(dmoi(1:this%ccl%nstruct,1:3,1:3)); dmoi=0.0_WP
       allocate(dlen(1:this%ccl%nstruct,1:3    )); dlen=0.0_WP
+      allocate(drem(1:this%ccl%nstruct        )); drem=0.0_WP
       
       ! First pass to accumulate volume, position, and velocity
       do n=1,this%ccl%nstruct
@@ -232,11 +235,18 @@ contains
             dvol(n  )=dvol(n  )+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)
             dpos(n,:)=dpos(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[x,y,z]
             dvel(n,:)=dvel(n,:)+this%cfg%vol(i,j,k)*this%vf%VF(i,j,k)*[this%Ui(i,j,k),this%Vi(i,j,k),this%Wi(i,j,k)]
+            ! Check if drop touches auto-transfer layer
+            if (i.ge.this%vf%cfg%imax-this%nlayer.or.&
+            &   j.le.this%vf%cfg%jmin+this%nlayer.or.&
+            &   j.ge.this%vf%cfg%jmax-this%nlayer.or.&
+            &   k.le.this%vf%cfg%kmin+this%nlayer.or.&
+            &   k.ge.this%vf%cfg%kmax-this%nlayer) drem(n)=1.0_WP
          end do
       end do
       call MPI_ALLREDUCE(MPI_IN_PLACE,dvol,1*this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,dpos,3*this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
       call MPI_ALLREDUCE(MPI_IN_PLACE,dvel,3*this%ccl%nstruct,MPI_REAL_WP,MPI_SUM,this%vf%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,drem,1*this%ccl%nstruct,MPI_REAL_WP,MPI_MAX,this%vf%cfg%comm,ierr)
       
       ! Second pass to accumulate moment of inertia
       do n=1,this%ccl%nstruct
@@ -284,52 +294,76 @@ contains
          dlen(n,3)=sqrt(5.0_WP/2.0_WP*abs(d(1)+d(2)-d(3))/dvol(n))
       end do
       
+      ! Find the liquid core
+      nmax=maxloc(dvol,dim=1)
+      
       ! Zero out transfered volume
       this%vof_transfered=0.0_WP
       
       ! Transfer drops based on our criteria
       do n=1,this%ccl%nstruct
          
-         ! Skip structures that do not meet our size criterion
+         ! Compute diameter
          diam=(6.0_WP*dvol(n)/pi)**(1.0_WP/3.0_WP)
-         if (diam.gt.this%dmax) cycle
          
-         ! Skip structures that do not meet our eccentricity criterion
-         if (diam.gt.this%dmin) then
+         ! Decide whether to transfer based on diameter
+         if (diam.gt.this%dmax) then
+            ! Too big to transfer
+            transfer=.false.
+         else if (diam.lt.this%dmin) then
+            ! Small enough to transfer automatically
+            transfer=.true.
+         else
+            ! In between, check eccentricity
             lmin=dlen(n,3)
             if (lmin.eq.0.0_WP) lmin=dlen(n,2) ! Handle 2D case
             lmax=dlen(n,1)
             ecc=sqrt(1.0_WP-lmin**2/(lmax**2+epsilon(1.0_WP)))
-         else
-            ecc=0.0_WP
-         end if
-         if (ecc.gt.this%emax) cycle
-         
-         ! Root creates a new Lagrangian drop
-         if (this%vf%cfg%amRoot) then
-            ! Increment particle counter
-            this%lp%np_=this%lp%np_+1
-            ! Make room for new drop
-            call this%lp%resize(this%lp%np_)
-            ! Add the drop
-            this%lp%p(this%lp%np_)%id  =int(1,8)
-            this%lp%p(this%lp%np_)%d   =diam
-            this%lp%p(this%lp%np_)%pos =dpos(n,:)
-            this%lp%p(this%lp%np_)%vel =dvel(n,:)
-            this%lp%p(this%lp%np_)%ind =this%lp%cfg%get_ijk_global(dpos(n,:),[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])
-            this%lp%p(this%lp%np_)%flag=0
-            this%lp%p(this%lp%np_)%dt  =0.0_WP
-            this%lp%p(this%lp%np_)%Acol=0.0_WP
-            this%lp%p(this%lp%np_)%Tcol=0.0_WP
+            if (ecc.gt.this%emax) then
+               ! Too eccentric to transfer yet
+               transfer=.false.
+            else
+               ! Spherical enough to transfer
+               transfer=.true.
+            end if
          end if
          
-         ! Zero out VF in the structure
-         do m=1,this%ccl%struct(n)%n_
-            this%vf%VF(this%ccl%struct(n)%map(1,m),this%ccl%struct(n)%map(2,m),this%ccl%struct(n)%map(3,m))=0.0_WP
-         end do
+         ! Force transfer if drop touches auto-transfer layer
+         if (drem(n).gt.0.0_WP) transfer=.true.
          
-         ! Increment vof_transfered
-         this%vof_transfered=this%vof_transfered+dvol(n)
+         ! But prevent transfer if that's the core
+         if (n.eq.nmax) transfer=.false.
+         
+         ! Perform transfer
+         if (transfer) then
+            
+            ! Root creates a new Lagrangian drop
+            if (this%vf%cfg%amRoot) then
+               ! Increment particle counter
+               this%lp%np_=this%lp%np_+1
+               ! Make room for new drop
+               call this%lp%resize(this%lp%np_)
+               ! Add the drop
+               this%lp%p(this%lp%np_)%id  =int(1,8)
+               this%lp%p(this%lp%np_)%d   =diam
+               this%lp%p(this%lp%np_)%pos =dpos(n,:)
+               this%lp%p(this%lp%np_)%vel =dvel(n,:)
+               this%lp%p(this%lp%np_)%ind =this%lp%cfg%get_ijk_global(dpos(n,:),[this%lp%cfg%imin,this%lp%cfg%jmin,this%lp%cfg%kmin])
+               this%lp%p(this%lp%np_)%flag=0
+               this%lp%p(this%lp%np_)%dt  =0.0_WP
+               this%lp%p(this%lp%np_)%Acol=0.0_WP
+               this%lp%p(this%lp%np_)%Tcol=0.0_WP
+            end if
+            
+            ! Zero out VF in the structure
+            do m=1,this%ccl%struct(n)%n_
+               this%vf%VF(this%ccl%struct(n)%map(1,m),this%ccl%struct(n)%map(2,m),this%ccl%struct(n)%map(3,m))=0.0_WP
+            end do
+            
+            ! Increment vof_transfered
+            this%vof_transfered=this%vof_transfered+dvol(n)
+
+         end if
          
       end do
       
@@ -341,7 +375,7 @@ contains
       call this%lp%sync()
       
       ! Deallocate all but work array
-      deallocate(dvol,dpos,dvel,dmoi,dlen)
+      deallocate(dvol,dpos,dvel,dmoi,dlen,drem)
       
    contains
       
