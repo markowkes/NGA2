@@ -604,9 +604,10 @@ contains
          integer :: i,j,k
          real(WP) :: rad
          ! Create a VOF solver with plicnet
-         call this%vf%initialize(cfg=this%cfg,reconstruction_method=plicnet,transport_method=remap,name='VOF')
-         !this%vf%twoplane_thld2=0.3_WP
-         !this%vf%thin_thld_min=1.0e-3_WP
+         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
+         this%vf%thin_thld_min=0.0_WP
+         this%vf%flotsam_thld=0.0_WP
+         this%vf%maxcurv_times_mesh=1.0_WP
          ! Initialize to flat interface at exit
          do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
             do j=this%vf%cfg%jmino_,this%vf%cfg%jmaxo_
@@ -885,8 +886,29 @@ contains
       
       ! Create surfmesh object for interface polygon output
       create_smesh: block
-         this%smesh=surfmesh(nvar=0,name='plic')
+         use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
+         integer :: i,j,k,np,nplane
+         this%smesh=surfmesh(nvar=2,name='plic')
+         this%smesh%varname(1)='nplane'
+         this%smesh%varname(2)='thickness'
+         ! Transfer polygons to smesh
          call this%vf%update_surfmesh_nowall(this%smesh)
+         ! Also populate nplane variable
+         this%smesh%var(1,:)=1.0_WP
+         np=0
+         do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
+            do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
+               do i=this%vf%cfg%imin_,this%vf%cfg%imax_
+                  if (this%cfg%VF(i,j,k).lt.2.0_WP*epsilon(1.0_WP)) cycle ! Skip cells below VF threshold
+                  do nplane=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
+                     if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
+                        np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
+                        this%smesh%var(2,np)=this%vf%thickness(i,j,k)
+                     end if
+                  end do
+               end do
+            end do
+         end do
       end block create_smesh
       
       
@@ -1264,9 +1286,9 @@ contains
          call this%fs%update_laplacian()
          call this%fs%correct_mfr()
          call this%fs%get_div()
-         call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         !call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
          !call this%fs%add_surface_tension_jump_thin(dt=this%time%dt,div=this%fs%div,vf=this%vf)
-         !call this%fs%add_surface_tension_jump_twoVF(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         call this%fs%add_surface_tension_jump_twoVF(dt=this%time%dt,div=this%fs%div,vf=this%vf)
          this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div/this%time%dt
          this%fs%psolv%sol=0.0_WP
          call this%fs%psolv%solve()
@@ -1345,7 +1367,28 @@ contains
       ! Output to ensight
       if (this%ens_evt%occurs()) then
          ! Update surface mesh
-         call this%vf%update_surfmesh_nowall(this%smesh)
+         update_smesh: block
+            use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
+            integer :: i,j,k,np,nplane
+            ! Transfer polygons to smesh
+            call this%vf%update_surfmesh_nowall(this%smesh)
+            ! Also populate nplane variable
+            this%smesh%var(1,:)=1.0_WP
+            np=0
+            do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
+               do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
+                  do i=this%vf%cfg%imin_,this%vf%cfg%imax_
+                     if (this%cfg%VF(i,j,k).lt.2.0_WP*epsilon(1.0_WP)) cycle ! Skip cells below VF threshold
+                     do nplane=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
+                        if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
+                           np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
+                           this%smesh%var(2,np)=this%vf%thickness(i,j,k)
+                        end if
+                     end do
+                  end do
+               end do
+            end do
+         end block update_smesh
          ! Update particle mesh object
          if (this%use_drop_transfer) then
             update_pmesh: block
