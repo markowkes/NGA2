@@ -1258,15 +1258,96 @@ contains
          this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV
          this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW
          
-         ! Apply IB forcing to enforce BC at the pipe walls
+         ! Apply IB forcing to enforce BC at the walls
          ibforcing: block
+            use ibconfig_class, only: VFhi,VFlo
             integer :: i,j,k
+            real(WP) :: vf,vol,dudn,delta,Uib,Vib,Wib
+            real(WP) :: Cslip=0.2_WP ! Whitmore, Bose, and Moin
             do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
                do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
                   do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-                     if (this%fs%umask(i,j,k).eq.0) this%fs%U(i,j,k)=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))*this%fs%U(i,j,k)
-                     if (this%fs%vmask(i,j,k).eq.0) this%fs%V(i,j,k)=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))*this%fs%V(i,j,k)
-                     if (this%fs%wmask(i,j,k).eq.0) this%fs%W(i,j,k)=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))*this%fs%W(i,j,k)
+                     ! U cell
+                     if (this%fs%umask(i,j,k).eq.0) then
+                        ! Interpolate VF to face
+                        vf=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
+                        ! Check where we are with respect to wall
+                        if (vf.gt.VFhi) then
+                           ! Not an IB cell
+                        else if (vf.lt.VFlo) then
+                           ! Apply direct forcing without wall model
+                           this%fs%U(i,j,k)=vf*this%fs%U(i,j,k)
+                        else
+                           ! Apply wall model [vf=1.0_WP-(1.0_WP-vf)**5 was successful proof of concept]
+                           vol=(this%fs%cfg%VF(i  ,j,k)*this%fs%cfg%vol(i  ,j,k)+&
+                           &    this%fs%cfg%VF(i-1,j,k)*this%fs%cfg%vol(i-1,j,k))
+                           dudn=-(this%fs%cfg%VF(i  ,j,k)*this%fs%cfg%vol(i  ,j,k)*sum(this%gradU(:,1,i  ,j,k)*this%cfg%Nib(:,i  ,j,k))+&
+                           &      this%fs%cfg%VF(i-1,j,k)*this%fs%cfg%vol(i-1,j,k)*sum(this%gradU(:,1,i-1,j,k)*this%cfg%Nib(:,i-1,j,k)))/vol
+                           delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
+                           Uib=Cslip*delta*dudn
+                           ! Apply IB forcing
+                           !if (this%fs%U(i,j,k).ge.0.0_WP) then
+                           !   Uib=max(min(Uib,this%fs%U(i,j,k)),-this%fs%U(i,j,k)*vf/(1.0_WP-vf))
+                           !else
+                           !   Uib=min(max(Uib,this%fs%U(i,j,k)),-this%fs%U(i,j,k)*vf/(1.0_WP-vf))
+                           !end if
+                           this%fs%U(i,j,k)=vf*this%fs%U(i,j,k)+(1.0_WP-vf)*Uib
+                        end if
+                     end if
+                     ! V cell
+                     if (this%fs%vmask(i,j,k).eq.0) then
+                        ! Interpolate VF to face
+                        vf=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
+                        ! Check where we are with respect to wall
+                        if (vf.gt.VFhi) then
+                           ! Not an IB cell
+                        else if (vf.lt.VFlo) then
+                           ! Apply direct forcing without wall model
+                           this%fs%V(i,j,k)=vf*this%fs%V(i,j,k)
+                        else
+                           ! Apply wall model [vf=1.0_WP-(1.0_WP-vf)**5 was successful proof of concept]
+                           vol=(this%fs%cfg%VF(i,j  ,k)*this%fs%cfg%vol(i,j  ,k)+&
+                           &    this%fs%cfg%VF(i,j-1,k)*this%fs%cfg%vol(i,j-1,k))
+                           dudn=-(this%fs%cfg%VF(i,j  ,k)*this%fs%cfg%vol(i,j  ,k)*sum(this%gradU(:,2,i,j  ,k)*this%cfg%Nib(:,i,j  ,k))+&
+                           &      this%fs%cfg%VF(i,j-1,k)*this%fs%cfg%vol(i,j-1,k)*sum(this%gradU(:,2,i,j-1,k)*this%cfg%Nib(:,i,j-1,k)))/vol
+                           delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
+                           Vib=Cslip*delta*dudn
+                           !if (this%fs%V(i,j,k).ge.0.0_WP) then
+                           !   Vib=max(min(Vib,this%fs%V(i,j,k)),-this%fs%V(i,j,k)*vf/(1.0_WP-vf))
+                           !else
+                           !   Vib=min(max(Vib,this%fs%V(i,j,k)),-this%fs%V(i,j,k)*vf/(1.0_WP-vf))
+                           !end if
+                           ! Apply IB forcing
+                           this%fs%V(i,j,k)=vf*this%fs%V(i,j,k)+(1.0_WP-vf)*Vib
+                        end if
+                     end if
+                     ! W cell
+                     if (this%fs%wmask(i,j,k).eq.0) then
+                        ! Interpolate VF to face
+                        vf=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
+                        ! Check where we are with respect to wall
+                        if (vf.gt.VFhi) then
+                           ! Not an IB cell
+                        else if (vf.lt.VFlo) then
+                           ! Apply direct forcing without wall model
+                           this%fs%W(i,j,k)=vf*this%fs%W(i,j,k)
+                        else
+                           ! Apply wall model [vf=1.0_WP-(1.0_WP-vf)**5 was successful proof of concept]
+                           vol=(this%fs%cfg%VF(i,j,k  )*this%fs%cfg%vol(i,j,k  )+&
+                           &    this%fs%cfg%VF(i,j,k-1)*this%fs%cfg%vol(i,j,k-1))
+                           dudn=-(this%fs%cfg%VF(i,j,k  )*this%fs%cfg%vol(i,j,k  )*sum(this%gradU(:,3,i,j,k  )*this%cfg%Nib(:,i,j,k  ))+&
+                           &      this%fs%cfg%VF(i,j,k-1)*this%fs%cfg%vol(i,j,k-1)*sum(this%gradU(:,3,i,j,k-1)*this%cfg%Nib(:,i,j,k-1)))/vol
+                           delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
+                           Wib=Cslip*delta*dudn
+                           !if (this%fs%W(i,j,k).ge.0.0_WP) then
+                           !   Wib=max(min(Wib,this%fs%W(i,j,k)),-this%fs%W(i,j,k)*vf/(1.0_WP-vf))
+                           !else
+                           !   Wib=min(max(Wib,this%fs%W(i,j,k)),-this%fs%W(i,j,k)*vf/(1.0_WP-vf))
+                           !end if
+                           ! Apply IB forcing
+                           this%fs%W(i,j,k)=vf*this%fs%W(i,j,k)+(1.0_WP-vf)*Wib
+                        end if
+                     end if
                   end do
                end do
             end do
@@ -1337,14 +1418,14 @@ contains
       
       ! Reset VOF in IBs
       reset_VOF_IB: block
-         use ibconfig_class, only: VFhi
+         use ibconfig_class, only: VFlo
          integer :: i,j,k
          real(WP) :: rad
          do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
             do j=this%vf%cfg%jmino_,this%vf%cfg%jmaxo_
                do i=this%vf%cfg%imino_,this%vf%cfg%imaxo_
-                  ! Only work in wall/IB cells
-                  if (this%vf%cfg%VF(i,j,k).gt.VFhi) cycle
+                  ! Only work in pure wall/IB cells
+                  if (this%vf%cfg%VF(i,j,k).gt.VFlo) cycle
                   ! Compute our local radius
                   rad=sqrt(this%vf%cfg%ym(j)**2+this%vf%cfg%zm(k)**2)
                   ! Ensure the nozzle is filled with liquid up to the throat with wet walls

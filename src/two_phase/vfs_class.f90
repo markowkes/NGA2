@@ -3366,7 +3366,7 @@ contains
          
          ! If the neighborhood normals are sufficiently consistent, just use PLICNET
          !if (surf_norm_mag(i,j,k).gt.this%twoplane_thld2) then
-         if (norm_sig(i,j,k).ge.0.5_WP.or.((norm_sig(i,j,k).lt.0.5_WP).and.(norm_abs(i,j,k).lt.0.83_WP))) then
+         if (norm_sig(i,j,k).ge.0.5_WP.or.((norm_sig(i,j,k).lt.0.5_WP).and.(norm_abs(i,j,k).lt.0.75_WP))) then
             ! PLICNET
             ! Liquid-gas symmetry
             flip=.false.; if (this%VF(i,j,k).ge.0.5_WP) flip=.true.
