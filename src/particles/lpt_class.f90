@@ -108,6 +108,8 @@ module lpt_class
       real(WP) :: Vmin,Vmax,Vmean,Vvar                    !< V velocity info
       real(WP) :: Wmin,Wmax,Wmean,Wvar                    !< W velocity info
       integer  :: np_new,np_out                           !< Number of new and removed particles
+      real(WP) :: vp_new,vp_out                           !< Volume of new and removed particles
+      real(WP) :: vp_tot                                  !< Total particle volume
       integer  :: ncol=0                                  !< Number of collisions
       
       ! Particle volume fraction
@@ -169,6 +171,7 @@ contains
       self%np_=0; self%np=0
       call self%resize(0)
       self%np_new=0; self%np_out=0
+      self%vp_new=0.0_WP; self%vp_out=0.0_WP; self%vp_tot=0.0_WP
       
       ! Initialize MPI derived datatype for a particle
       call prepare_mpi_part()
@@ -662,7 +665,8 @@ contains
    !> p%id=0 => no coll, no solve
    !> p%id=-1=> no coll, no move
    subroutine advance(this,dt,U,V,W,rho,visc,stress_x,stress_y,stress_z,vortx,vorty,vortz,T,srcU,srcV,srcW,srcE)
-      use mpi_f08, only : MPI_SUM,MPI_INTEGER
+      use mpi_f08,   only: MPI_ALLREDUCE,MPI_SUM,MPI_INTEGER,MPI_IN_PLACE
+      use parallel,  only: MPI_REAL_WP
       use mathtools, only: Pi
       implicit none
       class(lpt), intent(inout) :: this
@@ -714,6 +718,7 @@ contains
       
       ! Zero out number of particles removed
       this%np_out=0
+      this%vp_out=0
       
       ! Advance the equations
       do i=1,this%np_
@@ -763,7 +768,10 @@ contains
          ! Relocalize the particle
          myp%ind=this%cfg%get_ijk_global(myp%pos,myp%ind)
          ! Count number of particles removed
-         if (myp%flag.eq.1) this%np_out=this%np_out+1
+         if (myp%flag.eq.1) then
+            this%np_out=this%np_out+1
+            this%vp_out=this%vp_out+Pi/6.0_WP*myp%d**3
+         end if
          ! Copy back to particle
          if (myp%id.ne.-1) this%p(i)=myp
       end do
@@ -772,7 +780,8 @@ contains
       call this%sync()
       
       ! Sum up particles removed
-      call MPI_ALLREDUCE(this%np_out,i,1,MPI_INTEGER,MPI_SUM,this%cfg%comm,ierr); this%np_out=i
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_out,1,MPI_INTEGER,MPI_SUM,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%vp_out,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
       
       ! Divide source arrays by volume, sum at boundaries, and volume filter if present
       if (present(srcU)) then
@@ -1032,7 +1041,7 @@ contains
    !> Requires injection parameters to be set beforehand
    subroutine inject(this,dt,avoid_overlap)
       use mpi_f08
-      use parallel, only: MPI_REAL_WP
+      use parallel,  only: MPI_REAL_WP
       use mathtools, only: Pi
       implicit none
       class(lpt), intent(inout) :: this
@@ -1051,6 +1060,7 @@ contains
       ! Initial number of particles
       np0_=this%np_
       this%np_new=0
+      this%vp_new=0
       
       ! Get the particle mass that should be added to the system
       Mgoal  = this%mfr*dt+previous_error
@@ -1176,6 +1186,7 @@ contains
                maxid = max(maxid,this%p(i)%id)
                ! Increment counter
                this%np_new=this%np_new+1
+               this%vp_new=this%vp_new+Pi/6.0_WP*this%p(i)%d**3
             end if
          end do
          ! Total mass added
@@ -1192,7 +1203,8 @@ contains
       previous_error = Mgoal-Madded
       
       ! Sum up injected particles
-      call MPI_ALLREDUCE(this%np_new,i,1,MPI_INTEGER,MPI_SUM,this%cfg%comm,ierr); this%np_new=i
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%np_new,1,MPI_INTEGER,MPI_SUM,this%cfg%comm,ierr)
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%vp_new,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
       
       if (allocated(p2)) deallocate(p2)
       
@@ -1278,8 +1290,9 @@ contains
    
    !> Extract various monitoring data from particle field
    subroutine get_max(this)
-      use mpi_f08,  only: MPI_ALLREDUCE,MPI_MAX,MPI_MIN,MPI_SUM
-      use parallel, only: MPI_REAL_WP
+      use mpi_f08,   only: MPI_ALLREDUCE,MPI_MAX,MPI_MIN,MPI_SUM,MPI_IN_PLACE
+      use parallel,  only: MPI_REAL_WP
+      use mathtools, only: Pi
       implicit none
       class(lpt), intent(inout) :: this
       real(WP) :: buf,safe_np
@@ -1293,11 +1306,13 @@ contains
       this%Umin=huge(1.0_WP); this%Umax=-huge(1.0_WP); this%Umean=0.0_WP
       this%Vmin=huge(1.0_WP); this%Vmax=-huge(1.0_WP); this%Vmean=0.0_WP
       this%Wmin=huge(1.0_WP); this%Wmax=-huge(1.0_WP); this%Wmean=0.0_WP
+      this%vp_tot=0.0_WP
       do i=1,this%np_
          this%dmin=min(this%dmin,this%p(i)%d     ); this%dmax=max(this%dmax,this%p(i)%d     ); this%dmean=this%dmean+this%p(i)%d
          this%Umin=min(this%Umin,this%p(i)%vel(1)); this%Umax=max(this%Umax,this%p(i)%vel(1)); this%Umean=this%Umean+this%p(i)%vel(1)
          this%Vmin=min(this%Vmin,this%p(i)%vel(2)); this%Vmax=max(this%Vmax,this%p(i)%vel(2)); this%Vmean=this%Vmean+this%p(i)%vel(2)
          this%Wmin=min(this%Wmin,this%p(i)%vel(3)); this%Wmax=max(this%Wmax,this%p(i)%vel(3)); this%Wmean=this%Wmean+this%p(i)%vel(3)
+         this%vp_tot=this%vp_tot+Pi/6.0_WP*this%p(i)%d**3
       end do
       call MPI_ALLREDUCE(this%dmin ,buf,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr); this%dmin =buf
       call MPI_ALLREDUCE(this%dmax ,buf,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); this%dmax =buf
@@ -1311,6 +1326,7 @@ contains
       call MPI_ALLREDUCE(this%Wmin ,buf,1,MPI_REAL_WP,MPI_MIN,this%cfg%comm,ierr); this%Wmin =buf
       call MPI_ALLREDUCE(this%Wmax ,buf,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); this%Wmax =buf
       call MPI_ALLREDUCE(this%Wmean,buf,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr); this%Wmean=buf/safe_np
+      call MPI_ALLREDUCE(MPI_IN_PLACE,this%vp_tot,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
       
       ! Diameter and velocity variance
       this%dvar=0.0_WP

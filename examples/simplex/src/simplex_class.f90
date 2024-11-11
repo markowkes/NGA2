@@ -89,8 +89,10 @@ module simplex_class
       type(partmesh) :: pmesh      !< Particle mesh for lpt
       real(WP) :: dmax             !< Maximum diameter for transfer
       real(WP) :: dmin             !< Minimum diameter below which transfer is automatic
+      real(WP) :: ddel             !< Minimum diameter below which structure is directly deleted
       real(WP) :: emax             !< Maximum eccentricity for transfer
       real(WP) :: vof_transfered   !< Integral of VOF transfered
+      real(WP) :: vof_deleted      !< Integral of VOF deleted
       
       !> Inlet pipes geometry and flow rates
       real(WP) :: Rinlet=0.002_WP
@@ -291,7 +293,9 @@ contains
       
       ! Zero out monitoring variables
       this%vof_transfered=0.0_WP
+      this%vof_deleted=0.0_WP
       this%lp%np_new=0
+      this%lp%vp_new=0.0_WP
       
       ! Transfer drops based on our criteria
       do n=1,this%ccl%nstruct
@@ -303,7 +307,16 @@ contains
          if (diam.gt.this%dmax) then
             ! Too big to transfer
             transfer=.false.
-         else if (diam.lt.this%dmin) then
+         else if (diam.le.this%ddel) then
+            ! Too small to track, delete immediately
+            transfer=.false.
+            ! Zero out VF in the structure
+            do m=1,this%ccl%struct(n)%n_
+               this%vf%VF(this%ccl%struct(n)%map(1,m),this%ccl%struct(n)%map(2,m),this%ccl%struct(n)%map(3,m))=0.0_WP
+            end do
+            ! Increment monitoring variables
+            this%vof_deleted=this%vof_deleted+dvol(n)
+         else if (diam.gt.this%ddel.and.diam.le.this%dmin) then
             ! Small enough to transfer automatically
             transfer=.true.
          else
@@ -361,6 +374,7 @@ contains
             ! Increment monitoring variables
             this%vof_transfered=this%vof_transfered+dvol(n)
             this%lp%np_new=this%lp%np_new+1
+            this%lp%vp_new=this%lp%vp_new+dvol(n)
 
          end if
          
@@ -742,6 +756,7 @@ contains
             this%lp%filter_width=3.5_WP*this%cfg%min_meshsize
             call this%lp%resize(0)
             ! Set parameters for transfer
+            this%ddel=0.2_WP*this%cfg%min_meshsize
             this%dmin=1.5_WP*this%cfg%min_meshsize
             this%dmax=1.0e-3_WP
             this%emax=0.8_WP
@@ -968,6 +983,7 @@ contains
          call this%mfile%add_column(this%fs%Pmax,'Pmax')
          call this%mfile%add_column(this%vf%VFint,'VOF integral')
          call this%mfile%add_column(this%vof_removed,'VOF removed')
+         call this%mfile%add_column(this%vof_deleted,'VOF deleted')
          call this%mfile%add_column(this%vof_transfered,'VOF transfered')
          call this%mfile%add_column(this%vf%SDint,'SD integral')
          call this%mfile%add_column(this%fs%divmax,'Maximum divergence')
@@ -993,8 +1009,11 @@ contains
             call this%pfile%add_column(this%time%n,'Timestep number')
             call this%pfile%add_column(this%time%t,'Time')
             call this%pfile%add_column(this%lp%np,'Particle number')
+            call this%pfile%add_column(this%lp%vp_tot,'Particle volume')
             call this%pfile%add_column(this%lp%np_new,'Npart new')
+            call this%pfile%add_column(this%lp%vp_new,'Vpart new')
             call this%pfile%add_column(this%lp%np_out,'Npart removed')
+            call this%pfile%add_column(this%lp%vp_out,'Vpart removed')
             call this%pfile%add_column(this%lp%Umin,'Particle Umin')
             call this%pfile%add_column(this%lp%Umax,'Particle Umax')
             call this%pfile%add_column(this%lp%Vmin,'Particle Vmin')
