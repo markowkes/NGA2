@@ -172,14 +172,9 @@ contains
                            end do
                         end do
                      end do
-                     ! Rescale by min_meshsize and shift
-                     !do n=1,8
-                     !   hex_vertex(:,n)=(hex_vertex(:,n)-[this%x(i),this%y(j),this%z(k)])/this%min_meshsize
-                     !   G(n)=G(n)/this%min_meshsize
-                     !end do
                      ! Use marching tets to get volume fraction
                      call marching_tets(hex_vertex,G,vol,area,v_cent,a_cent)
-                     this%VF(i,j,k)=vol/this%vol(i,j,k)!*(this%min_meshsize)**3
+                     this%VF(i,j,k)=vol/this%vol(i,j,k)
                   end do
                end do
             end do

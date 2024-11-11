@@ -61,9 +61,9 @@ module simplex_class
       
       !> Work arrays
       real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
-      !real(WP), dimension(:,:,:,:), allocatable :: SR                !< Strain rate
       real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
       real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities
+      real(WP), dimension(:,:,:), allocatable :: Uib,Vib,Wib         !< IB slip velocity
       
       !> Iterator for VOF removal
       type(iterator) :: vof_removal_layer  !< Edge of domain where we actively remove VOF
@@ -588,13 +588,15 @@ contains
       ! Allocate work arrays
       allocate_work_arrays: block
          allocate(this%gradU(1:3,1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-         !allocate(this%SR(1:6,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%resU(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%resV(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%resW(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%Ui  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%Vi  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%Wi  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         allocate(this%Uib (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         allocate(this%Vib (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         allocate(this%Wib (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
       end block allocate_work_arrays
       
       
@@ -893,7 +895,9 @@ contains
          this%smesh%varname(2)='thickness'
          ! Transfer polygons to smesh
          call this%vf%update_surfmesh_nowall(this%smesh)
-         ! Also populate nplane variable
+         ! Calculate thickness
+         call this%vf%get_thickness()
+         ! Populate nplane and thickness variables
          this%smesh%var(1,:)=1.0_WP
          np=0
          do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
@@ -1209,18 +1213,56 @@ contains
       ! Turbulence modeling
       call this%tsgs%start() ! Start SGS timer
       sgs_modeling: block
-         use sgsmodel_class, only: vreman,dynamic_smag
+         use sgsmodel_class, only: vreman
+         use ibconfig_class, only: VFlo,VFhi
+         real(WP), parameter :: Cslip=0.2_WP ! Whitmore, Bose, and Moin
+         real(WP) :: vf,vol,delta,dudn
          integer :: i,j,k
-         this%resU=this%vf%VF*this%fs%rho_l+(1.0_WP-this%vf%VF)*this%fs%rho_g
+         ! Get velocity gradient tensor
          call this%fs%get_gradu(this%gradU)
+         ! Get turbulent viscosity
+         this%resU=this%vf%VF*this%fs%rho_l+(1.0_WP-this%vf%VF)*this%fs%rho_g
          call this%sgs%get_visc(type=vreman,dt=this%time%dtold,rho=this%resU,gradu=this%gradU)
-         !call this%fs%get_strainrate(this%SR)
-         !call this%sgs%get_visc(type=dynamic_smag,dt=this%time%dtold,rho=this%resU,Ui=this%Ui,Vi=this%Vi,Wi=this%Wi,SR=this%SR)
+         ! Add sgs visc to our two-phase viscosities
          do k=this%fs%cfg%kmino_+1,this%fs%cfg%kmaxo_; do j=this%fs%cfg%jmino_+1,this%fs%cfg%jmaxo_; do i=this%fs%cfg%imino_+1,this%fs%cfg%imaxo_
             this%fs%visc(i,j,k)   =this%fs%visc(i,j,k)   +this%sgs%visc(i,j,k)
             this%fs%visc_xy(i,j,k)=this%fs%visc_xy(i,j,k)+sum(this%fs%itp_xy(:,:,i,j,k)*this%sgs%visc(i-1:i,j-1:j,k))
             this%fs%visc_yz(i,j,k)=this%fs%visc_yz(i,j,k)+sum(this%fs%itp_yz(:,:,i,j,k)*this%sgs%visc(i,j-1:j,k-1:k))
             this%fs%visc_zx(i,j,k)=this%fs%visc_zx(i,j,k)+sum(this%fs%itp_xz(:,:,i,j,k)*this%sgs%visc(i-1:i,j,k-1:k))
+         end do; end do; end do
+         ! Compute slip velocity using Cslip*delta*(VF)**(1/3)*du/dn
+         this%Uib=0.0_WP; this%Vib=0.0_WP; this%Wib=0.0_WP
+         do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_; do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_; do i=this%fs%cfg%imin_,this%fs%cfg%imax_
+            ! Slip in x
+            vf=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
+            if (vf.ge.VFlo.and.vf.le.VFhi) then
+               vol=(this%fs%cfg%VF(i  ,j,k)*this%fs%cfg%vol(i  ,j,k)+&
+               &    this%fs%cfg%VF(i-1,j,k)*this%fs%cfg%vol(i-1,j,k))
+               dudn=-(this%fs%cfg%VF(i  ,j,k)*this%fs%cfg%vol(i  ,j,k)*sum(this%gradU(:,1,i  ,j,k)*this%cfg%Nib(:,i  ,j,k))+&
+               &      this%fs%cfg%VF(i-1,j,k)*this%fs%cfg%vol(i-1,j,k)*sum(this%gradU(:,1,i-1,j,k)*this%cfg%Nib(:,i-1,j,k)))/vol
+               delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
+               this%Uib(i,j,k)=Cslip*delta*dudn
+            end if
+            ! Slip in y
+            vf=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
+            if (vf.ge.VFlo.and.vf.le.VFhi) then
+               vol=(this%fs%cfg%VF(i,j  ,k)*this%fs%cfg%vol(i,j  ,k)+&
+               &    this%fs%cfg%VF(i,j-1,k)*this%fs%cfg%vol(i,j-1,k))
+               dudn=-(this%fs%cfg%VF(i,j  ,k)*this%fs%cfg%vol(i,j  ,k)*sum(this%gradU(:,2,i,j  ,k)*this%cfg%Nib(:,i,j  ,k))+&
+               &      this%fs%cfg%VF(i,j-1,k)*this%fs%cfg%vol(i,j-1,k)*sum(this%gradU(:,2,i,j-1,k)*this%cfg%Nib(:,i,j-1,k)))/vol
+               delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
+               this%Vib(i,j,k)=Cslip*delta*dudn
+            end if
+            ! Slip in z
+            vf=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
+            if (vf.ge.VFlo.and.vf.le.VFhi) then
+               vol=(this%fs%cfg%VF(i,j,k  )*this%fs%cfg%vol(i,j,k  )+&
+               &    this%fs%cfg%VF(i,j,k-1)*this%fs%cfg%vol(i,j,k-1))
+               dudn=-(this%fs%cfg%VF(i,j,k  )*this%fs%cfg%vol(i,j,k  )*sum(this%gradU(:,3,i,j,k  )*this%cfg%Nib(:,i,j,k  ))+&
+               &      this%fs%cfg%VF(i,j,k-1)*this%fs%cfg%vol(i,j,k-1)*sum(this%gradU(:,3,i,j,k-1)*this%cfg%Nib(:,i,j,k-1)))/vol
+               delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
+               this%Wib(i,j,k)=Cslip*delta*dudn
+            end if
          end do; end do; end do
       end block sgs_modeling
       call this%tsgs%stop() ! Stop SGS timer
@@ -1258,99 +1300,28 @@ contains
          this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV
          this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW
          
-         ! Apply IB forcing to enforce BC at the walls
+         ! Apply IB forcing to enforce wall boundary conditions
          ibforcing: block
             use ibconfig_class, only: VFhi,VFlo
             integer :: i,j,k
-            real(WP) :: vf,vol,dudn,delta,Uib,Vib,Wib
-            real(WP) :: Cslip=0.2_WP ! Whitmore, Bose, and Moin
-            do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
-               do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
-                  do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-                     ! U cell
-                     if (this%fs%umask(i,j,k).eq.0) then
-                        ! Interpolate VF to face
-                        vf=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
-                        ! Check where we are with respect to wall
-                        if (vf.gt.VFhi) then
-                           ! Not an IB cell
-                        else if (vf.lt.VFlo) then
-                           ! Apply direct forcing without wall model
-                           this%fs%U(i,j,k)=vf*this%fs%U(i,j,k)
-                        else
-                           ! Apply wall model [vf=1.0_WP-(1.0_WP-vf)**5 was successful proof of concept]
-                           vol=(this%fs%cfg%VF(i  ,j,k)*this%fs%cfg%vol(i  ,j,k)+&
-                           &    this%fs%cfg%VF(i-1,j,k)*this%fs%cfg%vol(i-1,j,k))
-                           dudn=-(this%fs%cfg%VF(i  ,j,k)*this%fs%cfg%vol(i  ,j,k)*sum(this%gradU(:,1,i  ,j,k)*this%cfg%Nib(:,i  ,j,k))+&
-                           &      this%fs%cfg%VF(i-1,j,k)*this%fs%cfg%vol(i-1,j,k)*sum(this%gradU(:,1,i-1,j,k)*this%cfg%Nib(:,i-1,j,k)))/vol
-                           delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
-                           Uib=Cslip*delta*dudn
-                           ! Apply IB forcing
-                           !if (this%fs%U(i,j,k).ge.0.0_WP) then
-                           !   Uib=max(min(Uib,this%fs%U(i,j,k)),-this%fs%U(i,j,k)*vf/(1.0_WP-vf))
-                           !else
-                           !   Uib=min(max(Uib,this%fs%U(i,j,k)),-this%fs%U(i,j,k)*vf/(1.0_WP-vf))
-                           !end if
-                           this%fs%U(i,j,k)=vf*this%fs%U(i,j,k)+(1.0_WP-vf)*Uib
-                        end if
-                     end if
-                     ! V cell
-                     if (this%fs%vmask(i,j,k).eq.0) then
-                        ! Interpolate VF to face
-                        vf=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
-                        ! Check where we are with respect to wall
-                        if (vf.gt.VFhi) then
-                           ! Not an IB cell
-                        else if (vf.lt.VFlo) then
-                           ! Apply direct forcing without wall model
-                           this%fs%V(i,j,k)=vf*this%fs%V(i,j,k)
-                        else
-                           ! Apply wall model [vf=1.0_WP-(1.0_WP-vf)**5 was successful proof of concept]
-                           vol=(this%fs%cfg%VF(i,j  ,k)*this%fs%cfg%vol(i,j  ,k)+&
-                           &    this%fs%cfg%VF(i,j-1,k)*this%fs%cfg%vol(i,j-1,k))
-                           dudn=-(this%fs%cfg%VF(i,j  ,k)*this%fs%cfg%vol(i,j  ,k)*sum(this%gradU(:,2,i,j  ,k)*this%cfg%Nib(:,i,j  ,k))+&
-                           &      this%fs%cfg%VF(i,j-1,k)*this%fs%cfg%vol(i,j-1,k)*sum(this%gradU(:,2,i,j-1,k)*this%cfg%Nib(:,i,j-1,k)))/vol
-                           delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
-                           Vib=Cslip*delta*dudn
-                           !if (this%fs%V(i,j,k).ge.0.0_WP) then
-                           !   Vib=max(min(Vib,this%fs%V(i,j,k)),-this%fs%V(i,j,k)*vf/(1.0_WP-vf))
-                           !else
-                           !   Vib=min(max(Vib,this%fs%V(i,j,k)),-this%fs%V(i,j,k)*vf/(1.0_WP-vf))
-                           !end if
-                           ! Apply IB forcing
-                           this%fs%V(i,j,k)=vf*this%fs%V(i,j,k)+(1.0_WP-vf)*Vib
-                        end if
-                     end if
-                     ! W cell
-                     if (this%fs%wmask(i,j,k).eq.0) then
-                        ! Interpolate VF to face
-                        vf=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
-                        ! Check where we are with respect to wall
-                        if (vf.gt.VFhi) then
-                           ! Not an IB cell
-                        else if (vf.lt.VFlo) then
-                           ! Apply direct forcing without wall model
-                           this%fs%W(i,j,k)=vf*this%fs%W(i,j,k)
-                        else
-                           ! Apply wall model [vf=1.0_WP-(1.0_WP-vf)**5 was successful proof of concept]
-                           vol=(this%fs%cfg%VF(i,j,k  )*this%fs%cfg%vol(i,j,k  )+&
-                           &    this%fs%cfg%VF(i,j,k-1)*this%fs%cfg%vol(i,j,k-1))
-                           dudn=-(this%fs%cfg%VF(i,j,k  )*this%fs%cfg%vol(i,j,k  )*sum(this%gradU(:,3,i,j,k  )*this%cfg%Nib(:,i,j,k  ))+&
-                           &      this%fs%cfg%VF(i,j,k-1)*this%fs%cfg%vol(i,j,k-1)*sum(this%gradU(:,3,i,j,k-1)*this%cfg%Nib(:,i,j,k-1)))/vol
-                           delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
-                           Wib=Cslip*delta*dudn
-                           !if (this%fs%W(i,j,k).ge.0.0_WP) then
-                           !   Wib=max(min(Wib,this%fs%W(i,j,k)),-this%fs%W(i,j,k)*vf/(1.0_WP-vf))
-                           !else
-                           !   Wib=min(max(Wib,this%fs%W(i,j,k)),-this%fs%W(i,j,k)*vf/(1.0_WP-vf))
-                           !end if
-                           ! Apply IB forcing
-                           this%fs%W(i,j,k)=vf*this%fs%W(i,j,k)+(1.0_WP-vf)*Wib
-                        end if
-                     end if
-                  end do
-               end do
-            end do
+            real(WP) :: vf
+            do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_; do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_; do i=this%fs%cfg%imin_,this%fs%cfg%imax_
+               ! U cell
+               if (this%fs%umask(i,j,k).eq.0) then
+                  vf=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
+                  this%fs%U(i,j,k)=vf*this%fs%U(i,j,k)+(1.0_WP-vf)*this%Uib(i,j,k)
+               end if
+               ! V cell
+               if (this%fs%vmask(i,j,k).eq.0) then
+                  vf=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
+                  this%fs%V(i,j,k)=vf*this%fs%V(i,j,k)+(1.0_WP-vf)*this%Vib(i,j,k)
+               end if
+               ! W cell
+               if (this%fs%wmask(i,j,k).eq.0) then
+                  vf=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
+                  this%fs%W(i,j,k)=vf*this%fs%W(i,j,k)+(1.0_WP-vf)*this%Wib(i,j,k)
+               end if
+            end do; end do; end do
             call this%fs%cfg%sync(this%fs%U)
             call this%fs%cfg%sync(this%fs%V)
             call this%fs%cfg%sync(this%fs%W)
@@ -1367,8 +1338,6 @@ contains
          call this%fs%update_laplacian()
          call this%fs%correct_mfr()
          call this%fs%get_div()
-         !call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
-         !call this%fs%add_surface_tension_jump_thin(dt=this%time%dt,div=this%fs%div,vf=this%vf)
          call this%fs%add_surface_tension_jump_twoVF(dt=this%time%dt,div=this%fs%div,vf=this%vf)
          this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div/this%time%dt
          this%fs%psolv%sol=0.0_WP
@@ -1570,7 +1539,8 @@ contains
       implicit none
       class(simplex), intent(inout) :: this
       ! Deallocate work arrays
-      deallocate(this%resU,this%resV,this%resW,this%Ui,this%Vi,this%Wi,this%gradU)!,this%SR)
+      deallocate(this%resU,this%resV,this%resW,this%Ui,this%Vi,this%Wi)
+      deallocate(this%gradU,this%Uib,this%Vib,this%Wib)
    end subroutine final
    
    
