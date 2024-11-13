@@ -6,7 +6,7 @@ module ligament_class
    use ensight_class,     only: ensight
    use surfmesh_class,    only: surfmesh
    use hypre_str_class,   only: hypre_str
-   use ddadi_class,       only: ddadi
+   !use ddadi_class,       only: ddadi
    use vfs_class,         only: vfs
    use tpns_class,        only: tpns
    use timetracker_class, only: timetracker
@@ -29,7 +29,7 @@ module ligament_class
       type(vfs)         :: vf    !< Volume fraction solver
       type(tpns)        :: fs    !< Two-phase flow solver
       type(hypre_str)   :: ps    !< Structured Hypre linear solver for pressure
-      type(ddadi)       :: vs    !< DDADI solver for velocity
+      !type(ddadi)       :: vs    !< DDADI solver for velocity
       type(timetracker) :: time  !< Time info
       
       !> Ensight postprocessing
@@ -136,7 +136,7 @@ contains
       
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
-         use vfs_class, only: remap,VFlo,VFhi,plicnet,r2p
+         use vfs_class, only: remap,VFlo,VFhi,plicnet,r2pnet
          use mms_geom,  only: cube_refine_vol
          use param,     only: param_read
          integer :: i,j,k,n,si,sj,sk
@@ -145,7 +145,10 @@ contains
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver
-         call this%vf%initialize(cfg=this%cfg,reconstruction_method=plicnet,transport_method=remap,name='VOF')
+         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
+         this%vf%thin_thld_min=0.0_WP
+         this%vf%flotsam_thld=0.0_WP
+         this%vf%maxcurv_times_mesh=1.0_WP
          ! Initialize the interface to a drop/ligament
          do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
             do j=this%vf%cfg%jmino_,this%vf%cfg%jmaxo_
@@ -223,9 +226,9 @@ contains
          call param_read('Pressure iteration',this%ps%maxit)
          call param_read('Pressure tolerance',this%ps%rcvg)
          ! Configure implicit velocity solver
-         this%vs=ddadi(cfg=this%cfg,name='Velocity',nst=7)
+         !this%vs=ddadi(cfg=this%cfg,name='Velocity',nst=7)
          ! Setup the solver
-         call this%fs%setup(pressure_solver=this%ps,implicit_solver=this%vs)
+         call this%fs%setup(pressure_solver=this%ps)!,implicit_solver=this%vs)
          ! Zero initial field
          this%fs%U=0.0_WP; this%fs%V=0.0_WP; this%fs%W=0.0_WP
          ! Apply convective velocity
@@ -251,7 +254,7 @@ contains
          use string,                only: str_medium
          use filesys,               only: makedir,isdir
          use irl_fortran_interface, only: setNumberOfPlanes,setPlane
-         character(len=str_medium) :: filename
+         character(len=str_medium) :: timestamp
          integer, dimension(3) :: iopartition
          real(WP), dimension(:,:,:), allocatable :: P11,P12,P13,P14
          real(WP), dimension(:,:,:), allocatable :: P21,P22,P23,P24
@@ -260,14 +263,14 @@ contains
          this%save_evt=event(this%time,'Restart output')
          call param_read('Restart output period',this%save_evt%tper)
          ! Check if we are restarting
-         call param_read('Restart from',filename,default='')
-         this%restarted=.false.; if (len_trim(filename).gt.0) this%restarted=.true.
+         call param_read('Restart from',timestamp,default='')
+         this%restarted=.false.; if (len_trim(timestamp).gt.0) this%restarted=.true.
          ! Read in the I/O partition
          call param_read('I/O partition',iopartition)
          ! Perform pardata initialization
          if (this%restarted) then
             ! Read in the file
-            call this%df%initialize(pg=this%cfg,iopartition=iopartition,fdata='restart/'//trim(filename))
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,fdata='restart/data_'//trim(timestamp))
             ! Read in the planes directly and set the IRL interface
             allocate(P11(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P11',var=P11)
             allocate(P12(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); call this%df%pull(name='P12',var=P12)
@@ -344,7 +347,31 @@ contains
       
       ! Create surfmesh object for interface polygon output
       create_smesh: block
-         this%smesh=surfmesh(nvar=0,name='plic')
+         use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
+         integer :: i,j,k,np,nplane
+         this%smesh=surfmesh(nvar=2,name='plic')
+         this%smesh%varname(1)='nplane'
+         this%smesh%varname(2)='thickness'
+         ! Transfer polygons to smesh
+         call this%vf%update_surfmesh(this%smesh)
+         ! Calculate thickness
+         call this%vf%get_thickness()
+         ! Populate nplane and thickness variables
+         this%smesh%var(1,:)=1.0_WP
+         np=0
+         do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
+            do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
+               do i=this%vf%cfg%imin_,this%vf%cfg%imax_
+                  if (this%cfg%VF(i,j,k).lt.2.0_WP*epsilon(1.0_WP)) cycle ! Skip cells below VF threshold
+                  do nplane=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
+                     if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
+                        np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
+                        this%smesh%var(2,np)=this%vf%thickness(i,j,k)
+                     end if
+                  end do
+               end do
+            end do
+         end do
       end block create_smesh
       
       
@@ -544,12 +571,12 @@ contains
          this%resW=-2.0_WP*this%fs%rho_W*this%fs%W+(this%fs%rho_Wold+this%fs%rho_W)*this%fs%Wold+this%time%dt*this%resW   
          
          ! Form implicit residuals
-         !call this%fs%solve_implicit(this%time%dt,this%resU,this%resV,this%resW)
+         call this%fs%solve_implicit(this%time%dt,this%resU,this%resV,this%resW)
          
          ! Apply these residuals
-         this%fs%U=2.0_WP*this%fs%U-this%fs%Uold+this%resU/this%fs%rho_U
-         this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV/this%fs%rho_V
-         this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW/this%fs%rho_W
+         this%fs%U=2.0_WP*this%fs%U-this%fs%Uold+this%resU
+         this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV
+         this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW
          
          ! Apply boundary conditions
          call this%fs%apply_bcond(this%time%t,this%time%dt)
@@ -562,9 +589,8 @@ contains
          call this%fs%update_laplacian()
          call this%fs%correct_mfr()
          call this%fs%get_div()
-         call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
-         !call this%fs%add_surface_tension_jump_thin(dt=this%time%dt,div=this%fs%div,vf=this%vf)
-         !call this%fs%add_surface_tension_jump_twoVF(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         !call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         call this%fs%add_surface_tension_jump_twoVF(dt=this%time%dt,div=this%fs%div,vf=this%vf)
          this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div/this%time%dt
          this%fs%psolv%sol=0.0_WP
          call this%fs%psolv%solve()
@@ -611,7 +637,29 @@ contains
       
       ! Output to ensight
       if (this%ens_evt%occurs()) then
-         call this%vf%update_surfmesh(this%smesh)
+         ! Update surface mesh
+         update_smesh: block
+            use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
+            integer :: i,j,k,np,nplane
+            ! Transfer polygons to smesh
+            call this%vf%update_surfmesh(this%smesh)
+            ! Also populate nplane variable
+            this%smesh%var(1,:)=1.0_WP
+            np=0
+            do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
+               do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
+                  do i=this%vf%cfg%imin_,this%vf%cfg%imax_
+                     if (this%cfg%VF(i,j,k).lt.2.0_WP*epsilon(1.0_WP)) cycle ! Skip cells below VF threshold
+                     do nplane=1,getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k))
+                        if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
+                           np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
+                           this%smesh%var(2,np)=this%vf%thickness(i,j,k)
+                        end if
+                     end do
+                  end do
+               end do
+            end do
+         end block update_smesh
          call this%ens_out%write_data(this%time%t)
       end if
       

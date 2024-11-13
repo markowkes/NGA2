@@ -623,7 +623,7 @@ contains
          call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
          this%vf%thin_thld_min=0.0_WP
          this%vf%flotsam_thld=0.0_WP
-         this%vf%maxcurv_times_mesh=1.0_WP
+         this%vf%maxcurv_times_mesh=0.5_WP
          ! Initialize to flat interface at exit
          do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
             do j=this%vf%cfg%jmino_,this%vf%cfg%jmaxo_
@@ -1357,7 +1357,11 @@ contains
          call this%fs%update_laplacian()
          call this%fs%correct_mfr()
          call this%fs%get_div()
-         call this%fs%add_surface_tension_jump_twoVF(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         if (this%vf%two_planes) then
+            call this%fs%add_surface_tension_jump_twoVF(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         else
+            call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
+         end if
          this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div/this%time%dt
          this%fs%psolv%sol=0.0_WP
          call this%fs%psolv%solve()
@@ -1441,6 +1445,8 @@ contains
             integer :: i,j,k,np,nplane
             ! Transfer polygons to smesh
             call this%vf%update_surfmesh_nowall(this%smesh)
+            ! Calculate thickness
+            call this%vf%get_thickness()
             ! Also populate nplane variable
             this%smesh%var(1,:)=1.0_WP
             np=0
