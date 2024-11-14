@@ -133,7 +133,7 @@ contains
       
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
-         use vfs_class, only: VFlo,VFhi,plicnet,remap,remap_storage
+         use vfs_class, only: VFlo,VFhi,remap,plicnet,r2pnet
          use mms_geom,  only: cube_refine_vol
          integer :: i,j,k,n,si,sj,sk
          real(WP), dimension(3,8) :: cube_vertex
@@ -141,7 +141,10 @@ contains
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver with plicnet reconstruction
-         call this%vf%initialize(cfg=this%cfg,reconstruction_method=plicnet,transport_method=remap,name='VOF')
+         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
+         this%vf%thin_thld_min=0.0_WP
+         this%vf%flotsam_thld=0.0_WP
+         this%vf%maxcurv_times_mesh=1.0_WP
          ! Initialize to cylindrical interface
          do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
             do j=this%vf%cfg%jmino_,this%vf%cfg%jmaxo_
