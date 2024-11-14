@@ -1476,7 +1476,9 @@ contains
       end do
       
       ! Update staggered density
-      this%rho_U=1.0_WP; this%rho_V=1.0_WP; this%rho_W=1.0_WP
+      this%rho_U=this%rho_Uold
+      this%rho_V=this%rho_Vold
+      this%rho_W=this%rho_Wold
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
