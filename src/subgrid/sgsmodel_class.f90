@@ -274,7 +274,7 @@ contains
      case(dynamic_smag)
         if (.not.present(Ui).or..not.(present(Vi)).or..not.present(Wi).or..not.present(SR)) &
              call die('[sgs get_visc] Dynamic Smagorinsky model requires Ui, Vi, Wi, and SR')
-        call this%visc_dynamic(dt,rho,Ui,Vi,Wi,SR,gradu)
+        call this%visc_dynamic(dt,rho,Ui,Vi,Wi,SR)
      case(constant_smag)
         if (.not.present(SR)) call die('[sgs get_visc] Constant Smagorinsky model requires SR')
         call this%visc_cst(rho,SR)
@@ -300,7 +300,7 @@ contains
    
    
    !> Get subgrid scale dynamic viscosity - Dynamic
-   subroutine visc_dynamic(this,dt,rho,Ui,Vi,Wi,SR,gradu)
+   subroutine visc_dynamic(this,dt,rho,Ui,Vi,Wi,SR)
       implicit none
       class(sgsmodel), intent(inout) :: this
       real(WP), intent(in) :: dt !< dt since the last call to the model
@@ -309,7 +309,6 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: Vi  !< Interpolated velocities including all ghosts
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: Wi  !< Interpolated velocities including all ghosts
       real(WP), dimension(1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: SR  !< Strain rate tensor
-      real(WP), dimension(1:,1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: gradu !< Velocity gradient tensor
       integer :: i,j,k
       real(WP) :: Frho,FU,FV,FW,FS_
       real(WP) :: Cs,tau,alpha,interp

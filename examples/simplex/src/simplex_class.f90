@@ -61,6 +61,7 @@ module simplex_class
       
       !> Work arrays
       real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
+      real(WP), dimension(:,:,:,:), allocatable :: SR                !< Strain rate tensor
       real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
       real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities
       real(WP), dimension(:,:,:), allocatable :: Uib,Vib,Wib         !< IB slip velocity
@@ -602,6 +603,7 @@ contains
       ! Allocate work arrays
       allocate_work_arrays: block
          allocate(this%gradU(1:3,1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+         allocate(this%SR       (1:6,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%resU(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%resV(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%resW(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
@@ -616,14 +618,14 @@ contains
       
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
-         use vfs_class, only: remap,plicnet,r2p,r2pnet,lvira
+         use vfs_class, only: remap,plicnet,r2pnet
          integer :: i,j,k
          real(WP) :: rad
          ! Create a VOF solver with plicnet
          call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
          this%vf%thin_thld_min=0.0_WP
          this%vf%flotsam_thld=0.0_WP
-         this%vf%maxcurv_times_mesh=0.5_WP
+         this%vf%maxcurv_times_mesh=1.0_WP
          ! Initialize to flat interface at exit
          do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
             do j=this%vf%cfg%jmino_,this%vf%cfg%jmaxo_
@@ -1232,18 +1234,27 @@ contains
       ! Turbulence modeling
       call this%tsgs%start() ! Start SGS timer
       sgs_modeling: block
-         use sgsmodel_class, only: vreman
+         use sgsmodel_class, only: vreman,dynamic_smag
          use ibconfig_class, only: VFlo,VFhi
          real(WP), parameter :: Cslip=0.2_WP ! Whitmore, Bose, and Moin
          real(WP) :: vf,vol,delta,dudn
          integer :: i,j,k
-         ! Get velocity gradient tensor
+         ! Get velocity gradient tensor and strain rate tensor
          call this%fs%get_gradu(this%gradU)
+         this%SR(6,:,:,:)=(this%gradU(1,1,:,:,:)+this%gradU(2,2,:,:,:)+this%gradU(3,3,:,:,:))/3.0_WP ! div
+         this%SR(1,:,:,:)=this%gradU(1,1,:,:,:)-this%SR(6,:,:,:)                                     ! du/dx-div/3
+         this%SR(2,:,:,:)=this%gradU(2,2,:,:,:)-this%SR(6,:,:,:)                                     ! dv/dy-div/3
+         this%SR(3,:,:,:)=this%gradU(3,3,:,:,:)-this%SR(6,:,:,:)                                     ! dw/dz-div/3
+         this%SR(4,:,:,:)=0.5_WP*(this%gradU(1,2,:,:,:)+this%gradU(2,1,:,:,:))                       ! (du/dy+dv/dx)/2
+         this%SR(5,:,:,:)=0.5_WP*(this%gradU(2,3,:,:,:)+this%gradU(3,2,:,:,:))                       ! (dv/dz+dw/dy)/2
+         this%SR(6,:,:,:)=0.5_WP*(this%gradU(3,1,:,:,:)+this%gradU(1,3,:,:,:))                       ! (dw/dx+du/dz)/2
          ! Get turbulent viscosity
          this%resU=this%vf%VF*this%fs%rho_l+(1.0_WP-this%vf%VF)*this%fs%rho_g
+         !call this%sgs%get_visc(type=dynamic_smag,dt=this%time%dtold,rho=this%resU,Ui=this%Ui,Vi=this%Vi,Wi=this%Wi,SR=this%SR)
          call this%sgs%get_visc(type=vreman,dt=this%time%dtold,rho=this%resU,gradu=this%gradU)
          ! Add sgs visc to our two-phase viscosities
          do k=this%fs%cfg%kmino_+1,this%fs%cfg%kmaxo_; do j=this%fs%cfg%jmino_+1,this%fs%cfg%jmaxo_; do i=this%fs%cfg%imino_+1,this%fs%cfg%imaxo_
+            this%sgs%visc(i,j,k)=this%sgs%visc(i,j,k)*this%fs%cfg%VF(i,j,k) ! Rescale eddy viscosity by VF
             this%fs%visc(i,j,k)   =this%fs%visc(i,j,k)   +this%sgs%visc(i,j,k)
             this%fs%visc_xy(i,j,k)=this%fs%visc_xy(i,j,k)+sum(this%fs%itp_xy(:,:,i,j,k)*this%sgs%visc(i-1:i,j-1:j,k))
             this%fs%visc_yz(i,j,k)=this%fs%visc_yz(i,j,k)+sum(this%fs%itp_yz(:,:,i,j,k)*this%sgs%visc(i,j-1:j,k-1:k))
@@ -1565,7 +1576,7 @@ contains
       class(simplex), intent(inout) :: this
       ! Deallocate work arrays
       deallocate(this%resU,this%resV,this%resW,this%Ui,this%Vi,this%Wi)
-      deallocate(this%gradU,this%Uib,this%Vib,this%Wib)
+      deallocate(this%gradU,this%Uib,this%Vib,this%Wib,this%SR)
    end subroutine final
    
    
