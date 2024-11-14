@@ -11,8 +11,8 @@ ny : 128
 nz : 128
 
 # Time integration
-Use implicit solver : .false.
-Max timestep size :   2e-2
+Use implicit solver : .true.
+Max timestep size :   5e-2
 Max cfl number :      0.9
 Max time :            100
 
