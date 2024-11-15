@@ -398,7 +398,7 @@ contains
       integer :: n
       n=this%findvar(name)
       if (n.gt.0) then
-         var=this%var(:,:,:,n)
+         var(this%pg%imin_:this%pg%imax_,this%pg%jmin_:this%pg%jmax_,this%pg%kmin_:this%pg%kmax_)=this%var(this%pg%imin_:this%pg%imax_,this%pg%jmin_:this%pg%jmax_,this%pg%kmin_:this%pg%kmax_,n)
          call this%pg%sync(var)
       else
          call die('[pardata pullvar] Var does not exist in the data file: '//name)
@@ -416,7 +416,7 @@ contains
       integer :: n
       n=this%findvar(name)
       if (n.gt.0) then
-         var=int(this%var(:,:,:,n))
+         var(this%pg%imin_:this%pg%imax_,this%pg%jmin_:this%pg%jmax_,this%pg%kmin_:this%pg%kmax_)=int(this%var(this%pg%imin_:this%pg%imax_,this%pg%jmin_:this%pg%jmax_,this%pg%kmin_:this%pg%kmax_,n))
          call this%pg%sync(var)
       else
          call die('[pardata pullvar] Var does not exist in the data file: '//name)
