@@ -169,12 +169,6 @@ contains
                      this%vf%Lbary(:,i,j,k)=[this%vf%cfg%xm(i),this%vf%cfg%ym(j),this%vf%cfg%zm(k)]
                      this%vf%Gbary(:,i,j,k)=[this%vf%cfg%xm(i),this%vf%cfg%ym(j),this%vf%cfg%zm(k)]
                   end if
-                  ! Clip cylinder after two cells
-                  !if (i.ge.this%cfg%imin+2) then
-                  !   this%vf%VF(i,j,k)=0.0_WP
-                  !   this%vf%Lbary(:,i,j,k)=[this%vf%cfg%xm(i),this%vf%cfg%ym(j),this%vf%cfg%zm(k)]
-                  !   this%vf%Gbary(:,i,j,k)=[this%vf%cfg%xm(i),this%vf%cfg%ym(j),this%vf%cfg%zm(k)]
-                  !end if
                end do
             end do
          end do
@@ -248,6 +242,7 @@ contains
       create_flow_solver: block
          use hypre_str_class, only: pcg_pfmg2
          use tpns_class,      only: dirichlet,clipped_neumann
+         real(WP) :: Froude
          ! Create flow solver
          this%fs=tpns(cfg=this%cfg,name='Two-phase NS')
          ! Set fluid properties
@@ -255,6 +250,7 @@ contains
          call param_read('Reynolds number',this%fs%visc_l); this%fs%visc_l=this%fs%rho_l/this%fs%visc_l
          call param_read('Viscosity ratio',this%fs%visc_g); this%fs%visc_g=this%fs%visc_l/this%fs%visc_g
          call param_read('Weber number',this%fs%sigma); this%fs%sigma=this%fs%rho_l/this%fs%sigma
+         call param_read('Froude number',Froude,default=0.0_WP); if (Froude.gt.0.0_WP) this%fs%gravity=[Froude**(-2.0_WP),0.0_WP,0.0_WP]
          ! Inflows in xm/xp and outflows in ym/yp/zm/zp
          call this%fs%add_bcond(name='inflow_xm',type=dirichlet,face='x',dir=-1,canCorrect=.false.,locator=xm_locator)
          call this%fs%add_bcond(name='inflow_xp',type=dirichlet,face='x',dir=+1,canCorrect=.false.,locator=xp_locator)
@@ -637,6 +633,9 @@ contains
          
          ! Explicit calculation of drho*u/dt from NS
          call this%fs%get_dmomdt(this%resU,this%resV,this%resW)
+         
+         ! Add momentum source terms
+         call this%fs%addsrc_gravity(this%resU,this%resV,this%resW)
          
          ! Assemble explicit residual
          this%resU=-2.0_WP*this%fs%rho_U*this%fs%U+(this%fs%rho_Uold+this%fs%rho_U)*this%fs%Uold+this%time%dt*this%resU
