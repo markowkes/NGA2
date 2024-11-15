@@ -1403,11 +1403,11 @@ contains
                  this%gradLrhoE(idir,i,j,k)=mmgrad((this%LrhoE(ip,jp,kp)-this%LrhoE(i,j,k))*idp,&
                       (this%LrhoE(i,j,k)-this%LrhoE(im,jm,km))*idm)*real(floor(       vf%VF(i,j,k)),WP)
                  this%gradLrhoU(idir,i,j,k)=mmgrad((this%Lrho(ip,jp,kp)*this%Ui(ip,jp,kp)-this%Lrho(i,j,k)*this%Ui(i,j,k))*idp,&
-                      (this%Lrho(i,j,k)*this%Ui(i,j,k)-this%Lrho(im,jm,km)*this%Ui(im,jm,km))*idm)*real(floor(1.0_WP-vf%VF(i,j,k)),WP)
+                      (this%Lrho(i,j,k)*this%Ui(i,j,k)-this%Lrho(im,jm,km)*this%Ui(im,jm,km))*idm)*real(floor(       vf%VF(i,j,k)),WP)
                  this%gradLrhoV(idir,i,j,k)=mmgrad((this%Lrho(ip,jp,kp)*this%Vi(ip,jp,kp)-this%Lrho(i,j,k)*this%Vi(i,j,k))*idp,&
-                      (this%Lrho(i,j,k)*this%Vi(i,j,k)-this%Lrho(im,jm,km)*this%Vi(im,jm,km))*idm)*real(floor(1.0_WP-vf%VF(i,j,k)),WP)
+                      (this%Lrho(i,j,k)*this%Vi(i,j,k)-this%Lrho(im,jm,km)*this%Vi(im,jm,km))*idm)*real(floor(       vf%VF(i,j,k)),WP)
                  this%gradLrhoW(idir,i,j,k)=mmgrad((this%Lrho(ip,jp,kp)*this%Wi(ip,jp,kp)-this%Lrho(i,j,k)*this%Wi(i,j,k))*idp,&
-                      (this%Lrho(i,j,k)*this%Wi(i,j,k)-this%Lrho(im,jm,km)*this%Wi(im,jm,km))*idm)*real(floor(1.0_WP-vf%VF(i,j,k)),WP)                 
+                      (this%Lrho(i,j,k)*this%Wi(i,j,k)-this%Lrho(im,jm,km)*this%Wi(im,jm,km))*idm)*real(floor(       vf%VF(i,j,k)),WP)                 
 
                  this%gradGIE  (idir,i,j,k)=mmgrad((this%GrhoE(ip,jp,kp)-this%GKEold(ip,jp,kp)-this%GrhoE(i,j,k) &
                       +this%GKEold(i,j,k))*idp,(this%GrhoE(i,j,k)-this%GKEold(i,j,k)-this%GrhoE(im,jm,km) &
@@ -3132,8 +3132,8 @@ contains
      detmnt = quad_terms(2)**2-4.0_WP*quad_terms(1)*quad_terms(3)
      if (detmnt.lt.0.0_WP) then
         if (i.ge.this%cfg%imin_.and.i.le.this%cfg%imax_.and. &
-             j.ge.this%cfg%jmin_.and.j.le.this%cfg%jmax_.and. &
-             k.ge.this%cfg%kmin_.and.k.le.this%cfg%kmax_) then
+            j.ge.this%cfg%jmin_.and.j.le.this%cfg%jmax_.and. &
+            k.ge.this%cfg%kmin_.and.k.le.this%cfg%kmax_) then
            print*,'Ptherm relax could not be performed(1)',i,j,k,'oVF',oVF, &
                 'detmnt',detmnt,'Pliq',matmod%EOS_liquid(i,j,k,'p'),'Pgas',matmod%EOS_gas(i,j,k,'p')
         end if
@@ -3150,8 +3150,8 @@ contains
           (Peq+matmod%Pref_g-my_pjump.lt.Plo.and.oVF.le.gelim).or.&
           (Peq+matmod%Pref_l.lt.Plo.and.oVF.ge.lelim)) then
         if (i.ge.this%cfg%imin_.and.i.le.this%cfg%imax_.and. &
-             j.ge.this%cfg%jmin_.and.j.le.this%cfg%jmax_.and. &
-             k.ge.this%cfg%kmin_.and.k.le.this%cfg%kmax_) then
+            j.ge.this%cfg%jmin_.and.j.le.this%cfg%jmax_.and. &
+            k.ge.this%cfg%kmin_.and.k.le.this%cfg%kmax_) then
            print*,'P relax could not be performed(2)',i,j,k,'oVF',oVF,'VF*',buf_VF, &
                 'Peq',Peq,'Pliq',matmod%EOS_liquid(i,j,k,'p'),'Pgas',matmod%EOS_gas(i,j,k,'p')
         end if
