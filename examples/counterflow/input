@@ -21,11 +21,11 @@ Pressure tolerance : 1e-4
 Pressure iteration : 30
 
 # Ensight output
-Ensight output period : 1
+Ensight output period : 2e-1
 
 # Restart handling
 Restart output period : 10
-Restart from : !1.00050E+01
+Restart from : !1.00000E+01
 
 # Flow parameters
 Froude number :   20

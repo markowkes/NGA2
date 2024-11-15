@@ -141,7 +141,7 @@ contains
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver with plicnet reconstruction
-         call this%vf%initialize(cfg=this%cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
+         call this%vf%initialize(cfg=this%cfg,reconstruction_method=plicnet,transport_method=remap,name='VOF')
          this%vf%thin_thld_min=0.0_WP
          this%vf%flotsam_thld=0.0_WP
          this%vf%maxcurv_times_mesh=1.0_WP
@@ -408,15 +408,20 @@ contains
       create_smesh: block
          use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
          integer :: i,j,k,np,nplane
-         this%smesh=surfmesh(nvar=2,name='plic')
+         this%smesh=surfmesh(nvar=3,name='plic')
          this%smesh%varname(1)='nplane'
          this%smesh%varname(2)='thickness'
+         this%smesh%varname(3)='curvature'
          ! Transfer polygons to smesh
          call this%vf%update_surfmesh(this%smesh)
-         ! Calculate thickness
-         call this%vf%get_thickness()
-         ! Populate nplane and thickness variables
-         this%smesh%var(1,:)=1.0_WP
+         ! Calculate curv2p and thickness even for plic
+         if (.not.this%vf%two_planes) then
+            allocate(this%vf%curv2p(1:2,this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_)); this%vf%curv2p   =0.0_WP
+            allocate(this%vf%thickness (this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_)); this%vf%thickness=0.0_WP
+            this%vf%curv2p(1,:,:,:)=this%vf%curv(:,:,:)
+            call this%vf%get_thickness()
+         end if
+         ! Populate surface variables
          np=0
          do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
             do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
@@ -425,6 +430,7 @@ contains
                      if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
                         np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
                         this%smesh%var(2,np)=this%vf%thickness(i,j,k)
+                        this%smesh%var(3,np)=this%vf%curv2p(nplane,i,j,k)
                      end if
                   end do
                end do
@@ -708,10 +714,12 @@ contains
             integer :: i,j,k,np,nplane
             ! Transfer polygons to smesh
             call this%vf%update_surfmesh(this%smesh)
-            ! Calculate thickness
-            call this%vf%get_thickness()
-            ! Also populate nplane variable
-            this%smesh%var(1,:)=1.0_WP
+            ! Calculate thickness and curv2p even for plic
+            if (.not.this%vf%two_planes) then
+               this%vf%curv2p(1,:,:,:)=this%vf%curv(:,:,:)
+               call this%vf%get_thickness()
+            end if
+            ! Populate surface variables
             np=0
             do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
                do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
@@ -720,6 +728,7 @@ contains
                         if (getNumberOfVertices(this%vf%interface_polygon(nplane,i,j,k)).gt.0) then
                            np=np+1; this%smesh%var(1,np)=real(getNumberOfPlanes(this%vf%liquid_gas_interface(i,j,k)),WP)
                            this%smesh%var(2,np)=this%vf%thickness(i,j,k)
+                           this%smesh%var(3,np)=this%vf%curv2p(nplane,i,j,k)
                         end if
                      end do
                   end do

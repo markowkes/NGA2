@@ -912,10 +912,12 @@ contains
          this%smesh%varname(2)='thickness'
          ! Transfer polygons to smesh
          call this%vf%update_surfmesh_nowall(this%smesh)
-         ! Calculate thickness
-         call this%vf%get_thickness()
-         ! Populate nplane and thickness variables
-         this%smesh%var(1,:)=1.0_WP
+         ! Calculate thickness even for plic
+         if (.not.this%vf%two_planes) then
+            allocate(this%vf%thickness(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_)); this%vf%thickness=0.0_WP
+            call this%vf%get_thickness()
+         end if
+         ! Populate surface variables
          np=0
          do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
             do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
@@ -1456,10 +1458,9 @@ contains
             integer :: i,j,k,np,nplane
             ! Transfer polygons to smesh
             call this%vf%update_surfmesh_nowall(this%smesh)
-            ! Calculate thickness
-            call this%vf%get_thickness()
-            ! Also populate nplane variable
-            this%smesh%var(1,:)=1.0_WP
+            ! Calculate thickness even for plic
+            if (.not.this%vf%two_planes) call this%vf%get_thickness()
+            ! Populate surface variables
             np=0
             do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
                do j=this%vf%cfg%jmin_,this%vf%cfg%jmax_
