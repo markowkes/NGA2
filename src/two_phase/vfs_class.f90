@@ -26,11 +26,10 @@ module vfs_class
    integer, parameter, public :: mof=3               !< MOF scheme
    integer, parameter, public :: wmof=4              !< Wide-MOF scheme
    integer, parameter, public :: r2p=5               !< R2P scheme
-   integer, parameter, public :: swartz=6            !< Swartz scheme
-   integer, parameter, public :: youngs=7            !< Youngs' scheme
-   integer, parameter, public :: lvlset=8            !< Levelset-based scheme
-   integer, parameter, public :: plicnet=9           !< PLICnet
-   integer, parameter, public :: r2pnet=10           !< R2Pnet
+   integer, parameter, public :: youngs=6            !< Youngs' scheme
+   integer, parameter, public :: lvlset=7            !< Levelset-based scheme
+   integer, parameter, public :: plicnet=8           !< PLICnet
+   integer, parameter, public :: r2pnet=9            !< R2Pnet
    
    ! List of available interface transport schemes for VF
    integer, parameter, public :: flux=1             !< Flux-based geometric transport
@@ -132,6 +131,10 @@ module vfs_class
       
       ! Curvature clipping parameter
       real(WP) :: maxcurv_times_mesh=1.0_WP               !< Clipping parameter for maximum curvature (classically set to 1, but could be larger with r2p since we resolve more)
+      
+      ! Interface smoothing parameters
+      integer  :: smoothing_maxite=0                      !< Maximum number of interface smoothing steps performed after the reconstruction
+      real(WP) :: smoothing_maxres=0.0_WP                 !< Maximum residual for interface smoothing - infinity norm, once reached, smoothing stops
       
       ! IRL objects
       type(ByteBuffer_type) :: send_byte_buffer
@@ -289,7 +292,7 @@ contains
       
       ! Set reconstruction method
       select case (reconstruction_method)
-      case (lvira,elvira,swartz,youngs,mof,wmof,plicnet)
+      case (lvira,elvira,youngs,mof,wmof,plicnet)
          this%reconstruction_method=reconstruction_method
          this%two_planes=.false.
       case (r2p,r2pnet)
@@ -2186,20 +2189,18 @@ contains
       class(vfs), intent(inout) :: this
       ! Reconstruct interface - will need to support various methods
       select case (this%reconstruction_method)
-      case (elvira); call this%build_elvira()
-      case (lvira) ; call this%build_lvira()
-      case (mof)   ; call this%build_mof()
-      case (wmof)  ; call this%build_wmof()
-      case (r2p)   ; call this%build_r2p()
-      case (swartz)
-         call this%build_lvira()
-         call this%smooth_interface()
-      case (youngs); call this%build_youngs()
-      !case (lvlset); call this%build_lvlset()
+      case (elvira) ; call this%build_elvira()
+      case (lvira)  ; call this%build_lvira()
+      case (mof)    ; call this%build_mof()
+      case (wmof)   ; call this%build_wmof()
+      case (r2p)    ; call this%build_r2p()
+      case (youngs) ; call this%build_youngs()
       case (plicnet); call this%build_plicnet()
-      case (r2pnet); call this%build_r2pnet()
+      case (r2pnet) ; call this%build_r2pnet()
       case default; call die('[vfs build interface] Unknown interface reconstruction scheme')
       end select
+      ! Follow with interface smoothing
+      call this%smooth_interface()
    end subroutine build_interface
    
 
@@ -2524,32 +2525,29 @@ contains
    !> Smoothing of an IRL interface based on Swartz-like algorithm
    subroutine smooth_interface(this)
       use mathtools, only: cross_product,normalize,Pi,qrotate
-      use mpi_f08,   only: MPI_ALLREDUCE,MPI_MAX
+      use mpi_f08,   only: MPI_ALLREDUCE,MPI_MAX,MPI_IN_PLACE
       use parallel,  only: MPI_REAL_WP
       implicit none
       class(vfs), intent(inout) :: this
-      integer :: i,j,k,ii,jj,kk,ierr,ite,count
-      real(WP) :: myres,res,mag
+      integer :: n,nn,i,j,k,ii,jj,kk,ierr,ite
+      real(WP) :: surf,res,dist
       real(WP), dimension(3) :: mynorm,mybary,bary,norm,newnorm,r
       real(WP), dimension(4) :: plane,q
       type(RectCub_type) :: cell
-      !real(WP), parameter :: norm_threshold=0.85_WP ! About 30 degrees
-      real(WP), parameter :: norm_threshold=0.0_WP ! 0 degrees
-      real(WP), parameter :: maxres=1.0e-6_WP
-      integer , parameter :: maxite=5
+      real(WP), parameter :: norm_threshold=0.0_WP ! 90 degrees
       
       ! Allocate cell
       call new(cell)
       
       ! Iterate until convergence criterion is met
       res=huge(1.0_WP); ite=0
-      do while (res.ge.maxres.and.ite.lt.maxite)
+      do while (res.ge.this%smoothing_maxres.and.ite.lt.this%smoothing_maxite)
          
          ! Create discontinuous polygon mesh from IRL interface
          call this%polygonalize_interface()
          
          ! Traverse domain and form new normal
-         myres=0.0_WP
+         res=0.0_WP
          do k=this%cfg%kmin_,this%cfg%kmax_
             do j=this%cfg%jmin_,this%cfg%jmax_
                do i=this%cfg%imin_,this%cfg%imax_
@@ -2557,50 +2555,59 @@ contains
                   if (this%mask(i,j,k).ne.0) cycle
                   ! Skip cells without interface
                   if (this%VF(i,j,k).lt.VFlo.or.this%VF(i,j,k).gt.VFhi) cycle
-                  ! Compute polygon barycenter and normal
-                  mybary=calculateCentroid(this%interface_polygon(1,i,j,k))
-                  mynorm=calculateNormal  (this%interface_polygon(1,i,j,k))
-                  ! Loop over our neighbors and form new normal
-                  newnorm=0.0_WP; count=0
-                  do kk=k-1,k+1
-                     do jj=j-1,j+1
-                        do ii=i-1,i+1
-                           ! Skip stencil center
-                           if (ii.eq.i.and.jj.eq.j.and.kk.eq.k) cycle
-                           ! Skip cells without polygons
-                           if (getNumberOfVertices(this%interface_polygon(1,ii,jj,kk)).eq.0) cycle
-                           ! Increment neighbor counter
-                           count=count+1
-                           ! Compute polygon barycenter and normal
-                           bary=calculateCentroid(this%interface_polygon(1,ii,jj,kk))-mybary
-                           norm=calculateNormal  (this%interface_polygon(1,ii,jj,kk))
-                           ! Skip polygons with normal too different from ours
-                           if (dot_product(mynorm,norm).lt.norm_threshold) cycle
-                           ! Build a quaternion to rotate Pi/2 around r axis
-                           r=cross_product(bary,mynorm)
-                           q(1)=cos(0.25_WP*Pi); q(2:4)=sin(0.25_WP*Pi)*normalize(r)
-                           ! Increment our normal estimate using a barycenter-based normal
-                           newnorm=newnorm+qrotate(v=bary,q=q)
+                  ! Get a smoothed normal for each plane
+                  do n=1,getNumberOfPlanes(this%liquid_gas_interface(i,j,k))
+                     ! Skip empty polygon
+                     if (getNumberOfVertices(this%interface_polygon(n,i,j,k)).eq.0) cycle
+                     ! Compute polygon barycenter and normal
+                     mybary=calculateCentroid(this%interface_polygon(n,i,j,k))
+                     mynorm=calculateNormal  (this%interface_polygon(n,i,j,k))
+                     ! Loop over our neighbors and form new normal
+                     newnorm=0.0_WP
+                     do kk=k-1,k+1
+                        do jj=j-1,j+1
+                           do ii=i-1,i+1
+                              ! Look at each polygon
+                              do nn=1,getNumberOfPlanes(this%liquid_gas_interface(ii,jj,kk))
+                                 ! Skip empty polygon
+                                 if (getNumberOfVertices(this%interface_polygon(nn,ii,jj,kk)).eq.0) cycle
+                                 ! Skip my current polygon
+                                 if (ii.eq.i.and.jj.eq.j.and.kk.eq.k.and.nn.eq.n) cycle
+                                 ! Compute polygon barycenter and normal
+                                 surf=      abs(calculateVolume  (this%interface_polygon(nn,ii,jj,kk)))
+                                 bary=normalize(calculateCentroid(this%interface_polygon(nn,ii,jj,kk))-mybary)
+                                 norm=          calculateNormal  (this%interface_polygon(nn,ii,jj,kk))
+                                 ! Skip polygons with normal too different from ours
+                                 if (dot_product(mynorm,norm).lt.norm_threshold) cycle
+                                 ! Build a quaternion to rotate Pi/2 around r axis
+                                 r=normalize(cross_product(bary,mynorm))
+                                 q(1)=cos(0.25_WP*Pi); q(2:4)=sin(0.25_WP*Pi)*r
+                                 ! Increment our normal estimate using a barycenter-based normal
+                                 newnorm=newnorm+qrotate(v=bary,q=q)*surf
+                              end do
+                           end do
                         end do
                      end do
+                     ! Ensure we have a meaningful normal vector
+                     if (norm2(newnorm).le.epsilon(1.0_WP)) cycle
+                     ! Normalize new normal vector
+                     newnorm=normalize(newnorm)
+                     ! Monitor convergence
+                     res=max(res,1.0_WP-dot_product(mynorm,newnorm))
+                     ! Adjust plane orientation while keeping position unchanged
+                     plane=getPlane(this%liquid_gas_interface(i,j,k),n-1)
+                     dist=plane(4)+dot_product(newnorm-plane(1:3),[this%cfg%xm(i),this%cfg%ym(j),this%cfg%zm(k)])
+                     call setPlane(this%liquid_gas_interface(i,j,k),n-1,newnorm,dist)
+                     ! Readjust plane position to ensure exact conservation
+                     call construct_2pt(cell,[this%cfg%x(i),this%cfg%y(j),this%cfg%z(k)],[this%cfg%x(i+1),this%cfg%y(j+1),this%cfg%z(k+1)])
+                     call matchVolumeFraction(cell,this%VF(i,j,k),this%liquid_gas_interface(i,j,k))
                   end do
-                  ! Set minimum number of neighbors to 1
-                  if (count.eq.0) cycle
-                  ! Normalize new normal vector
-                  newnorm=normalize(newnorm)
-                  ! Adjust plane orientation (not position yet)
-                  plane=getPlane(this%liquid_gas_interface(i,j,k),0)
-                  call setPlane(this%liquid_gas_interface(i,j,k),0,newnorm,plane(4))
-                  call construct_2pt(cell,[this%cfg%x(i),this%cfg%y(j),this%cfg%z(k)],[this%cfg%x(i+1),this%cfg%y(j+1),this%cfg%z(k+1)])
-                  call matchVolumeFraction(cell,this%VF(i,j,k),this%liquid_gas_interface(i,j,k))
-                  ! Monitor convergence
-                  myres=max(myres,1.0_WP-dot_product(mynorm,newnorm))
                end do
             end do
          end do
          
          ! Collect maximum residual and increment iteration counter
-         call MPI_ALLREDUCE(myres,res,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); ite=ite+1
+         call MPI_ALLREDUCE(MPI_IN_PLACE,res,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); ite=ite+1
          if (this%cfg%amRoot) print*,'ite=',ite,'residual=',res
          
          ! Synchronize across boundaries
