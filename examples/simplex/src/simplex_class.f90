@@ -917,8 +917,8 @@ contains
          ! Calculate thickness even for plic
          if (.not.this%vf%two_planes) then
             allocate(this%vf%thickness(this%vf%cfg%imino_:this%vf%cfg%imaxo_,this%vf%cfg%jmino_:this%vf%cfg%jmaxo_,this%vf%cfg%kmino_:this%vf%cfg%kmaxo_)); this%vf%thickness=0.0_WP
-            call this%vf%get_thickness()
          end if
+         call this%vf%get_thickness()
          ! Populate surface variables
          np=0
          do k=this%vf%cfg%kmin_,this%vf%cfg%kmax_
