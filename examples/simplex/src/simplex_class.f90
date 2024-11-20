@@ -502,7 +502,7 @@ contains
          do k=this%cfg%kmino_,this%cfg%kmaxo_
             do j=this%cfg%jmino_,this%cfg%jmaxo_
                do i=this%cfg%imino_,this%cfg%imaxo_
-                  ! Calculate distance from object obtained by revolution of polygon
+                  ! Calculate distance from object obtained by revolution of polygon for the plenum
                   this%cfg%Gib(i,j,k)=-this%poly%get_distance([this%cfg%xm(i),sqrt(this%cfg%ym(j)**2+this%cfg%zm(k)**2)])
                end do
             end do
@@ -536,11 +536,13 @@ contains
                      ! Call adaptive refinement code to get volume fraction recursively - inlet pipe 1
                      vol=0.0_WP; area=0.0_WP; v_cent=0.0_WP; a_cent=0.0_WP
                      call cube_refine_vol(cube_vertex,vol,area,v_cent,a_cent,levelset_inlet_pipe_1,0.0_WP,amr_ref_lvl)
-                     this%cfg%VF(i,j,k)=max(this%cfg%VF(i,j,k),vol/(this%cfg%dx(i)*this%cfg%dy(j)*this%cfg%dz(k)))
+                     this%cfg%VF(i,j,k)=max(this%cfg%VF(i,j,k), vol/this%cfg%vol(i,j,k))
+                     this%cfg%SD(i,j,k)=max(this%cfg%SD(i,j,k),area/this%cfg%vol(i,j,k))
                      ! Call adaptive refinement code to get volume fraction recursively - inlet pipe 2
                      vol=0.0_WP; area=0.0_WP; v_cent=0.0_WP; a_cent=0.0_WP
                      call cube_refine_vol(cube_vertex,vol,area,v_cent,a_cent,levelset_inlet_pipe_2,0.0_WP,amr_ref_lvl)
-                     this%cfg%VF(i,j,k)=max(this%cfg%VF(i,j,k),vol/(this%cfg%dx(i)*this%cfg%dy(j)*this%cfg%dz(k)))
+                     this%cfg%VF(i,j,k)=max(this%cfg%VF(i,j,k), vol/this%cfg%vol(i,j,k))
+                     this%cfg%SD(i,j,k)=max(this%cfg%SD(i,j,k),area/this%cfg%vol(i,j,k))
                   end do
                end do
             end do
@@ -1238,8 +1240,7 @@ contains
       sgs_modeling: block
          use sgsmodel_class, only: vreman,dynamic_smag
          use ibconfig_class, only: VFlo,VFhi
-         real(WP), parameter :: Cslip=0.2_WP ! Whitmore, Bose, and Moin
-         real(WP) :: vf,vol,delta,dudn
+         real(WP), parameter :: Cwm=1.0_WP ! Whitmore, Bose, and Moin, as well as Hausmann and van Wachem
          integer :: i,j,k
          ! Get velocity gradient tensor and strain rate tensor
          call this%fs%get_gradu(this%gradU)
@@ -1256,45 +1257,16 @@ contains
          call this%sgs%get_visc(type=vreman,dt=this%time%dtold,rho=this%resU,gradu=this%gradU)
          ! Add sgs visc to our two-phase viscosities
          do k=this%fs%cfg%kmino_+1,this%fs%cfg%kmaxo_; do j=this%fs%cfg%jmino_+1,this%fs%cfg%jmaxo_; do i=this%fs%cfg%imino_+1,this%fs%cfg%imaxo_
-            this%sgs%visc(i,j,k)=this%sgs%visc(i,j,k)*this%fs%cfg%VF(i,j,k) ! Rescale eddy viscosity by VF
             this%fs%visc(i,j,k)   =this%fs%visc(i,j,k)   +this%sgs%visc(i,j,k)
             this%fs%visc_xy(i,j,k)=this%fs%visc_xy(i,j,k)+sum(this%fs%itp_xy(:,:,i,j,k)*this%sgs%visc(i-1:i,j-1:j,k))
             this%fs%visc_yz(i,j,k)=this%fs%visc_yz(i,j,k)+sum(this%fs%itp_yz(:,:,i,j,k)*this%sgs%visc(i,j-1:j,k-1:k))
             this%fs%visc_zx(i,j,k)=this%fs%visc_zx(i,j,k)+sum(this%fs%itp_xz(:,:,i,j,k)*this%sgs%visc(i-1:i,j,k-1:k))
          end do; end do; end do
-         ! Compute slip velocity using Cslip*delta*(VF)**(1/3)*du/dn
-         this%Uib=0.0_WP; this%Vib=0.0_WP; this%Wib=0.0_WP
-         do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_; do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_; do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-            ! Slip in x
-            vf=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
-            if (vf.ge.VFlo.and.vf.le.VFhi) then
-               vol=(this%fs%cfg%VF(i  ,j,k)*this%fs%cfg%vol(i  ,j,k)+&
-               &    this%fs%cfg%VF(i-1,j,k)*this%fs%cfg%vol(i-1,j,k))
-               dudn=-(this%fs%cfg%VF(i  ,j,k)*this%fs%cfg%vol(i  ,j,k)*sum(this%gradU(:,1,i  ,j,k)*this%cfg%Nib(:,i  ,j,k))+&
-               &      this%fs%cfg%VF(i-1,j,k)*this%fs%cfg%vol(i-1,j,k)*sum(this%gradU(:,1,i-1,j,k)*this%cfg%Nib(:,i-1,j,k)))/vol
-               delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
-               this%Uib(i,j,k)=Cslip*delta*dudn
-            end if
-            ! Slip in y
-            vf=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
-            if (vf.ge.VFlo.and.vf.le.VFhi) then
-               vol=(this%fs%cfg%VF(i,j  ,k)*this%fs%cfg%vol(i,j  ,k)+&
-               &    this%fs%cfg%VF(i,j-1,k)*this%fs%cfg%vol(i,j-1,k))
-               dudn=-(this%fs%cfg%VF(i,j  ,k)*this%fs%cfg%vol(i,j  ,k)*sum(this%gradU(:,2,i,j  ,k)*this%cfg%Nib(:,i,j  ,k))+&
-               &      this%fs%cfg%VF(i,j-1,k)*this%fs%cfg%vol(i,j-1,k)*sum(this%gradU(:,2,i,j-1,k)*this%cfg%Nib(:,i,j-1,k)))/vol
-               delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
-               this%Vib(i,j,k)=Cslip*delta*dudn
-            end if
-            ! Slip in z
-            vf=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
-            if (vf.ge.VFlo.and.vf.le.VFhi) then
-               vol=(this%fs%cfg%VF(i,j,k  )*this%fs%cfg%vol(i,j,k  )+&
-               &    this%fs%cfg%VF(i,j,k-1)*this%fs%cfg%vol(i,j,k-1))
-               dudn=-(this%fs%cfg%VF(i,j,k  )*this%fs%cfg%vol(i,j,k  )*sum(this%gradU(:,3,i,j,k  )*this%cfg%Nib(:,i,j,k  ))+&
-               &      this%fs%cfg%VF(i,j,k-1)*this%fs%cfg%vol(i,j,k-1)*sum(this%gradU(:,3,i,j,k-1)*this%cfg%Nib(:,i,j,k-1)))/vol
-               delta=(0.5_WP*vol)**(1.0_WP/3.0_WP)
-               this%Wib(i,j,k)=Cslip*delta*dudn
-            end if
+         ! Compute slip velocity using Cslip*delta*du/dn
+         do k=this%fs%cfg%kmino_,this%fs%cfg%kmaxo_; do j=this%fs%cfg%jmino_,this%fs%cfg%jmaxo_; do i=this%fs%cfg%imino_,this%fs%cfg%imaxo_
+            this%Uib(i,j,k)=-Cwm*this%fs%cfg%meshsize(i,j,k)*sum(this%gradU(:,1,i,j,k)*this%cfg%Nib(:,i,j,k))
+            this%Vib(i,j,k)=-Cwm*this%fs%cfg%meshsize(i,j,k)*sum(this%gradU(:,2,i,j,k)*this%cfg%Nib(:,i,j,k))
+            this%Wib(i,j,k)=-Cwm*this%fs%cfg%meshsize(i,j,k)*sum(this%gradU(:,3,i,j,k)*this%cfg%Nib(:,i,j,k))
          end do; end do; end do
       end block sgs_modeling
       call this%tsgs%stop() ! Stop SGS timer
@@ -1334,24 +1306,42 @@ contains
          
          ! Apply IB forcing to enforce wall boundary conditions
          ibforcing: block
-            use ibconfig_class, only: VFhi,VFlo
             integer :: i,j,k
-            real(WP) :: vf
+            real(WP) :: sd
             do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_; do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_; do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-               ! U cell
-               if (this%fs%umask(i,j,k).eq.0) then
-                  vf=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
-                  this%fs%U(i,j,k)=vf*this%fs%U(i,j,k)+(1.0_WP-vf)*this%Uib(i,j,k)
-               end if
-               ! V cell
-               if (this%fs%vmask(i,j,k).eq.0) then
-                  vf=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
-                  this%fs%V(i,j,k)=vf*this%fs%V(i,j,k)+(1.0_WP-vf)*this%Vib(i,j,k)
-               end if
-               ! W cell
-               if (this%fs%wmask(i,j,k).eq.0) then
-                  vf=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
-                  this%fs%W(i,j,k)=vf*this%fs%W(i,j,k)+(1.0_WP-vf)*this%Wib(i,j,k)
+               ! Use different model at inlet vs. inside the nozzle
+               if (this%cfg%xm(i).le.this%p1(1)+this%cfg%min_meshsize) then
+                  ! U cell
+                  if (this%fs%umask(i,j,k).eq.0) then
+                     sd=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
+                     this%fs%U(i,j,k)=sd*this%fs%U(i,j,k)
+                  end if
+                  ! V cell
+                  if (this%fs%vmask(i,j,k).eq.0) then
+                     sd=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
+                     this%fs%V(i,j,k)=sd*this%fs%V(i,j,k)
+                  end if
+                  ! W cell
+                  if (this%fs%wmask(i,j,k).eq.0) then
+                     sd=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
+                     this%fs%W(i,j,k)=sd*this%fs%W(i,j,k)
+                  end if
+               else
+                  ! U cell
+                  if (this%fs%umask(i,j,k).eq.0) then
+                     sd=min(sum(this%fs%itpr_x(:,i,j,k)*this%cfg%SD(i-1:i,j,k)*this%cfg%meshsize(i-1:i,j,k)),1.0_WP)
+                     this%fs%U(i,j,k)=(1.0_WP-sd)*this%fs%U(i,j,k)+sd*sum(this%fs%itpr_x(:,i,j,k)*this%Uib(i-1:i,j,k))
+                  end if
+                  ! V cell
+                  if (this%fs%vmask(i,j,k).eq.0) then
+                     sd=min(sum(this%fs%itpr_y(:,i,j,k)*this%cfg%SD(i,j-1:j,k)*this%cfg%meshsize(i,j-1:j,k)),1.0_WP)
+                     this%fs%V(i,j,k)=(1.0_WP-sd)*this%fs%V(i,j,k)+sd*sum(this%fs%itpr_y(:,i,j,k)*this%Vib(i,j-1:j,k))
+                  end if
+                  ! W cell
+                  if (this%fs%wmask(i,j,k).eq.0) then
+                     sd=min(sum(this%fs%itpr_z(:,i,j,k)*this%cfg%SD(i,j,k-1:k)*this%cfg%meshsize(i,j,k-1:k)),1.0_WP)
+                     this%fs%W(i,j,k)=(1.0_WP-sd)*this%fs%W(i,j,k)+sd*sum(this%fs%itpr_z(:,i,j,k)*this%Wib(i,j,k-1:k))
+                  end if
                end if
             end do; end do; end do
             call this%fs%cfg%sync(this%fs%U)
