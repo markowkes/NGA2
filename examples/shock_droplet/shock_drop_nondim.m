@@ -27,7 +27,7 @@
 
 rho_1 = 1; v_shock = 1; gamma=1.4; Ma_g = 0.577;
 
-fun = @(x)findval(x,gamma,rho_1,v_shock,Ma_s);
+fun = @(x)findval(x,gamma,rho_1,v_shock,Ma_g);
 x = fsolve(fun,[1.01 1 1.5 1]);
 
 

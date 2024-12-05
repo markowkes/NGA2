@@ -10,6 +10,7 @@ module simulation
    use event_class,       only: event
    use monitor_class,     only: monitor
    use hypre_str_class,   only: hypre_str
+   use ddadi_class,       only: ddadi
    use surfmesh_class,    only: surfmesh
    implicit none
    private
@@ -21,7 +22,8 @@ module simulation
    type(matm),        public :: matmod
    type(timetracker), public :: time
    type(hypre_str),   public :: ps
-   type(hypre_str),   public :: vs
+   !type(hypre_str),   public :: vs
+   type(ddadi),   public :: vs
    
    !> Ensight postprocessing
    type(ensight) :: ens_out
@@ -108,7 +110,6 @@ contains
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver with lvira reconstruction
-         ! vf=vfs(cfg=cfg,reconstruction_method=elvira,name='VOF')
          call vf%initialize(cfg=cfg,reconstruction_method=plicnet,transport_method=flux,name='VOF')
          ! Initialize liquid at left
          ddrop=1.0_WP; call param_read('Droplet location',dctr)
@@ -166,7 +167,8 @@ contains
       ! Create a compressible two-phase flow solver
       create_and_initialize_flow_solver: block
          use mast_class, only: clipped_neumann,dirichlet,bc_scope,bcond,mech_egy_mech_hhz
-         use hypre_str_class, only: pcg_pfmg
+         use hypre_str_class, only: pcg_pfmg2
+         use ddadi_class, only: ddadi
          use mathtools,  only: Pi
          use parallel,   only: amRoot
          use param, only: param_read,param_exists
@@ -175,7 +177,7 @@ contains
          real(WP) :: r_rho,Reg,r_visc,Mag,Mal,Weg
          real(WP) :: gamm_l,Pref_l,gamm_g,visc_l,visc_g,Pref
          real(WP) :: xshock,vshock,relshockvel
-         real(WP) :: Grho0,GP0,Grho1,GP1,ST,Ma1,Ma,Lrho0,LP0,Mas,Pr_g,Pr_l,kappa_l,kappa_g,cv_g0,cv_l0
+         real(WP) :: Grho0,GP0,Grho1,GP1,ST,Ma1,Lrho0,LP0,Mas,Pr_g,Pr_l,kappa_l,kappa_g,cv_g0,cv_l0
          type(bcond), pointer :: mybc
          ! Create material model class
          matmod=matm(cfg=cfg,name='Liquid-gas models')
@@ -206,14 +208,15 @@ contains
          ! Read in surface tension coefficient
          call param_read('Gas Weber number',Weg); fs%sigma=1.0_WP/(Weg+epsilon(Weg))
          ! Configure pressure solver
-         ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg,nst=7)
+         ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg2,nst=7)
          ps%maxlevel=10
          call param_read('Pressure iteration',ps%maxit)
          call param_read('Pressure tolerance',ps%rcvg)
          ! Configure implicit velocity solver
-         vs=hypre_str(cfg=cfg,name='Velocity',method=pcg_pfmg,nst=7)
-         call param_read('Implicit iteration',vs%maxit)
-         call param_read('Implicit tolerance',vs%rcvg)
+         !vs=hypre_str(cfg=cfg,name='Velocity',method=pcg_pfmg2,nst=7)
+         !call param_read('Implicit iteration',vs%maxit)
+         !call param_read('Implicit tolerance',vs%rcvg)
+         vs=ddadi(cfg=cfg,name='Velocity',nst=7)
          ! Setup the solver
          call fs%setup(pressure_solver=ps,implicit_solver=vs)
          
@@ -228,13 +231,13 @@ contains
          call param_read('Shock location',xshock)
          call param_read('Shock Mach number',Mas)
          ! Calculate Pressure post-shock
-         GP1 = vshock**2.0_WP * Grho1/(gamm_g*Ma**2.0_WP)
+         GP1 = vshock**2.0_WP * Grho1/(gamm_g*Mag**2.0_WP)
          ! Calculate density pre-shock
          Grho0 = Grho1*((gamm_g-1.0_WP)*(Mas**2) + 2.0_WP) / ((Mas**2.0_WP) * (gamm_g+1.0_WP))
          ! Calculate pressure pre-shock
          GP0 = GP1*(gamm_g+1.0_WP) / (2.0_WP*gamm_g*Mas**2.0_WP-(gamm_g-1.0_WP))
          ! Calculate post-shock Mach number
-         Ma1 = sqrt(((gamm_g-1.0_WP)*(Ma**2)+2.0_WP)/(2.0_WP*gamm_g*(Ma**2.0_WP)-(gamm_g-1.0_WP)))
+         Ma1 = sqrt(((gamm_g-1.0_WP)*(Mag**2)+2.0_WP)/(2.0_WP*gamm_g*(Mag**2.0_WP)-(gamm_g-1.0_WP)))
          ! Velocity at which shock moves
          relshockvel = -Grho1*vshock/(Grho0-Grho1)
          

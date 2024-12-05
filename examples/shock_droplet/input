@@ -5,14 +5,14 @@ Partition : 1 8 1
 Lx : 12
 Ly : 12
 Lz : 12
-nx : 250
-ny : 250
-nz : 250 
+nx : 256
+ny : 256
+nz : 1
 Cells per diameter :      50
 Cells per left region :   35
 Refined region left bdy:  5
-Refined region right bdy: 6
-Refined region top bdy:   1
+Refined region right bdy: 7
+Refined region top y bdy: 1
 
 # Flow setup
 Droplet location : 6 0 0
@@ -22,7 +22,7 @@ Shock location :   5.4
 Density ratio :           1000
 Dynamic viscosity ratio : 100
 Gas Reynolds number :     1000
-Gas Weber number :        50
+Gas Weber number :        100
 Gas Mach number :         0.577
 Liquid Mach number :      0.3
 Shock Mach number :       1.47

@@ -293,23 +293,26 @@ contains
                print*,'Right stretched region'
                print*,'    first dx',x(cpl+nxr+2)-x(cpl+nxr+1),'last dx',x(nx+1)-x(nx)
                print*,'    last pt',x(nx+1)
-               print*,'Uniform y region'
-               print*,'    dy',y(ny/2+2)-y(ny/2+1),'rdx',rdx
-               print*,'    first pt',y(ny/2+1),'number of pts',nyr
-               print*,'Top stretched region'
-               print*,'    first dy',y(ny/2+nyr+2)-y(ny/2+nyr+1),'last dy',y(ny+1)-y(ny)
-               print*,'    first pt',y(ny/2+nyr+1),'last pt',y(ny+1)
-               print*,'Bottom region'
-               print*,'    first pt',y(1),'last pt',y(ny/2-nyr+1)
-               print*,'Uniform z region'
-               print*,'    dz',z(nz/2+2)-z(nz/2+1),'rdx',rdx
-               print*,'    first pt',z(nz/2+1),'number of pts',nzr
-               print*,'Top stretched region'
-               print*,'    first dy',z(nz/2+nzr+2)-z(nz/2+nzr+1),'last dy',z(nz+1)-z(nz)
-               print*,'    first pt',z(nz/2+nzr+1),'last pt',z(nz+1)
-               print*,'Bottom region'
-               print*,'    first pt',z(1),'last pt',z(ny/2-nyr+1)
-               print*,' '
+               if (ny.gt.1) then
+                  print*,'Uniform y region'
+                  print*,'    dy',y(ny/2+2)-y(ny/2+1),'rdx',rdx
+                  print*,'    first pt',y(ny/2+1),'number of pts',nyr
+                  print*,'Top stretched region'
+                  print*,'    first dy',y(ny/2+nyr+2)-y(ny/2+nyr+1),'last dy',y(ny+1)-y(ny)
+                  print*,'    first pt',y(ny/2+nyr+1),'last pt',y(ny+1)
+                  print*,'Bottom region'
+                  print*,'    first pt',y(1),'last pt',y(ny/2-nyr+1)
+               end if
+               if (nz.gt.1) then
+                  print*,'Uniform z region'
+                  print*,'    dz',z(nz/2+2)-z(nz/2+1),'rdx',rdx
+                  print*,'    first pt',z(nz/2+1),'number of pts',nzr
+                  print*,'Top stretched region'
+                  print*,'    first dy',z(nz/2+nzr+2)-z(nz/2+nzr+1),'last dy',z(nz+1)-z(nz)
+                  print*,'    first pt',z(nz/2+nzr+1),'last pt',z(nz+1)
+                  print*,'Bottom region'
+                  print*,'    first pt',z(1),'last pt',z(ny/2-nyr+1)
+               end if
             end if
             
          else
