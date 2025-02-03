@@ -13,11 +13,16 @@ module ibconfig_class
    integer, parameter, public :: bigot=1
    integer, parameter, public :: sharp=2
    
+   ! Min and max VF values considered
+   real(WP), parameter, public :: VFlo=1.0e-12_WP
+   real(WP), parameter, public :: VFhi=1.0_WP-VFlo
+   
    !> Config object definition as an extension of config
    type, extends(config) :: ibconfig
       
       real(WP), dimension(:,:,:),   allocatable :: Gib             !< Level set function, negative in fluid and positive in solid
       real(WP), dimension(:,:,:,:), allocatable :: Nib             !< IB normal vector, oriented into the solid
+      real(WP), dimension(:,:,:),   allocatable :: SD              !< Surface density of wall in the cell
       
    contains
       procedure :: calculate_normal          !< Calculate robustly the normal vector from G field
@@ -48,7 +53,8 @@ contains
       self%config=config(grp,decomp,grid)
       ! Allocate IB info
       allocate(self%Gib(    self%imino_:self%imaxo_,self%jmino_:self%jmaxo_,self%kmino_:self%kmaxo_)); self%Gib=-1.0_WP
-      allocate(self%Nib(1:3,self%imino_:self%imaxo_,self%jmino_:self%jmaxo_,self%kmino_:self%kmaxo_)); self%Nib=+0.0_WP
+      allocate(self%Nib(1:3,self%imino_:self%imaxo_,self%jmino_:self%jmaxo_,self%kmino_:self%kmaxo_)); self%Nib= 0.0_WP
+      allocate(self%SD (    self%imino_:self%imaxo_,self%jmino_:self%jmaxo_,self%kmino_:self%kmaxo_)); self%SD = 0.0_WP
    end function construct_from_sgrid
    
    
@@ -140,7 +146,8 @@ contains
                   do i=this%imino_,this%imaxo_
                      lambda=sum(abs(this%Nib(:,i,j,k)))
                      eta=0.065_WP*(1.0_WP-lambda**2)+0.39_WP
-                     this%VF(i,j,k)=0.5_WP*(1.0_WP-tanh(this%Gib(i,j,k)/(lambda*eta*this%meshsize(i,j,k))))
+                     this%VF(i,j,k)=+0.5_WP*(1.0_WP-tanh(this%Gib(i,j,k)/(lambda*eta*this%meshsize(i,j,k))))
+                     this%SD(i,j,k)=-0.5_WP/(lambda*eta*this%meshsize(i,j,k)*cosh(this%Gib(i,j,k)/(lambda*eta*this%meshsize(i,j,k)))**2)
                   end do
                end do
             end do
@@ -168,22 +175,28 @@ contains
                            end do
                         end do
                      end do
-                     ! Rescale by min_meshsize and shift
-                     !do n=1,8
-                     !   hex_vertex(:,n)=(hex_vertex(:,n)-[this%x(i),this%y(j),this%z(k)])/this%min_meshsize
-                     !   G(n)=G(n)/this%min_meshsize
-                     !end do
                      ! Use marching tets to get volume fraction
                      call marching_tets(hex_vertex,G,vol,area,v_cent,a_cent)
-                     this%VF(i,j,k)=vol/this%vol(i,j,k)!*(this%min_meshsize)**3
+                     this%VF(i,j,k)= vol/this%vol(i,j,k)
+                     this%SD(i,j,k)=area/this%vol(i,j,k)
                   end do
                end do
             end do
             call this%sync(this%VF) !< Sync needed because of the Gib interpolation above
+            call this%sync(this%SD) !< Sync needed because of the Gib interpolation above
          end block sharp
       case default
          call die('[ibconfig calculate_vf] Unknown method to calculate VF')
       end select
+      
+      ! Ensure VF is either 0 or 1, or VFlo<VF<VFhi
+      where (this%VF.lt.VFlo)
+         this%VF=0.0_WP
+         this%SD=0.0_WP
+      elsewhere (this%VF.gt.VFhi)
+         this%VF=1.0_WP
+         this%SD=0.0_WP
+      end where
       
       ! Check if VF=0 is allowed
       if (present(allow_zero_vf)) then

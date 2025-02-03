@@ -795,7 +795,7 @@ contains
             open(newunit=iunit,file=trim(filename),form='unformatted',status='replace',access='stream',iostat=ierr)
             if (ierr.ne.0) call die('[ensight write part] Could not open file: '//trim(filename))
             ! General header
-            cbuff='particle'//trim(adjustl(part%ptr%vecname(n)))     ; write(iunit) cbuff
+            cbuff='particle '//trim(adjustl(part%ptr%vecname(n))); write(iunit) cbuff
             ! Close the file
             close(iunit)
          end if

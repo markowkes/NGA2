@@ -33,36 +33,6 @@ module simulation
 contains
    
    
-   !> Function that defines a level set function for Zalesak's notched circle problem
-   function levelset_zalesak(xyz,t) result(G)
-      implicit none
-      real(WP), dimension(3),intent(in) :: xyz
-      real(WP), intent(in) :: t
-      real(WP) :: G
-      real(WP) :: c,b,b1,b2,h1,h2
-      c=radius-sqrt(sum((xyz-center)**2))
-      b1=center(1)-0.5_WP*width; b2=center(1)+0.5_WP*width
-      h1=center(2)-radius*cos(asin(0.5_WP*width/radius)); h2=center(2)-radius+height
-      if     (c.ge.0.0_WP.and.xyz(1).le.b1.and.xyz(2).le.h2) then
-         b=b1-xyz(1); G=min(c,b)
-      elseif (c.ge.0.0_WP.and.xyz(1).ge.b2.and.xyz(2).le.h2) then
-         b=xyz(1)-b2; G=min(c,b)
-      elseif (c.ge.0.0_WP.and.xyz(1).ge.b1.and.xyz(1).le.b2.and.xyz(2).ge.h2) then
-         b=xyz(2)-h2; G=min(c,b)
-      elseif (c.ge.0.0_WP.and.xyz(1).le.b1.and.xyz(2).ge.h2) then
-         b=sqrt(sum((xyz-(/b1,h2,0.0_WP/))**2)); G=min(c,b)
-      elseif (c.ge.0.0_WP.and.xyz(1).ge.b2.and.xyz(2).ge.h2) then
-         b=sqrt(sum((xyz-(/b2,h2,0.0_WP/))**2)); G=min(c,b)
-      elseif (xyz(1).ge.b1.and.xyz(1).le.b2.and.xyz(2).le.h2.and.xyz(2).ge.h1) then
-         G=-min(abs(xyz(1)-b1),abs(xyz(1)-b2),abs(xyz(2)-h2))
-      elseif (xyz(1).ge.b1.and.xyz(1).le.b2.and.xyz(2).le.h1) then
-         G=-min(sqrt(sum((xyz-(/b1,h1,0.0_WP/))**2)),sqrt(sum((xyz-(/b2,h1,0.0_WP/))**2)))
-      else
-         G=c
-      end if
-   end function levelset_zalesak
-   
-   
    !> Initialization of problem solver
    subroutine simulation_init
       use param, only: param_read
@@ -71,17 +41,17 @@ contains
       ! Initialize our VOF
       initialize_vof: block
          use mms_geom, only: cube_refine_vol
-         use vfs_class, only: lvira,VFhi,VFlo
+         use vfs_class, only: VFhi,VFlo,remap,lvira,plicnet,r2pnet,r2p
          integer :: i,j,k,n,si,sj,sk
          real(WP), dimension(3,8) :: cube_vertex
          real(WP), dimension(3) :: v_cent,a_cent
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver
-         vf=vfs(cfg=cfg,reconstruction_method=lvira,name='VOF')
+         call vf%initialize(cfg=cfg,reconstruction_method=r2pnet,transport_method=remap,name='VOF')
          ! Initialize to Zalesak disk
          center=[0.0_WP,0.25_WP,0.0_WP]
-         radius=0.15_WP
+         radius=0.05_WP!0.15_WP
          width =0.05_WP
          height=0.25_WP
          do k=vf%cfg%kmino_,vf%cfg%kmaxo_
@@ -98,7 +68,8 @@ contains
                   end do
                   ! Call adaptive refinement code to get volume and barycenters recursively
                   vol=0.0_WP; area=0.0_WP; v_cent=0.0_WP; a_cent=0.0_WP
-                  call cube_refine_vol(cube_vertex,vol,area,v_cent,a_cent,levelset_zalesak,0.0_WP,amr_ref_lvl)
+                  !call cube_refine_vol(cube_vertex,vol,area,v_cent,a_cent,levelset_zalesak,0.0_WP,amr_ref_lvl)
+                  call cube_refine_vol(cube_vertex,vol,area,v_cent,a_cent,levelset_sphere,0.0_WP,amr_ref_lvl)
                   vf%VF(i,j,k)=vol/vf%cfg%vol(i,j,k)
                   if (vf%VF(i,j,k).ge.VFlo.and.vf%VF(i,j,k).le.VFhi) then
                      vf%Lbary(:,i,j,k)=v_cent
@@ -114,6 +85,8 @@ contains
          call vf%update_band()
          ! Perform interface reconstruction from VOF field
          call vf%build_interface()
+         ! Set interface planes at the boundaries
+         call vf%set_full_bcond()
          ! Create discontinuous polygon mesh from IRL interface
          call vf%polygonalize_interface()
          ! Calculate distance from polygons
@@ -135,20 +108,25 @@ contains
          allocate(U(vf%cfg%imino_:vf%cfg%imaxo_,vf%cfg%jmino_:vf%cfg%jmaxo_,vf%cfg%kmino_:vf%cfg%kmaxo_))
          allocate(V(vf%cfg%imino_:vf%cfg%imaxo_,vf%cfg%jmino_:vf%cfg%jmaxo_,vf%cfg%kmino_:vf%cfg%kmaxo_))
          allocate(W(vf%cfg%imino_:vf%cfg%imaxo_,vf%cfg%jmino_:vf%cfg%jmaxo_,vf%cfg%kmino_:vf%cfg%kmaxo_))
-         ! Initialize to solid body rotation
+         ! Initialize to analytical flow field
          do k=vf%cfg%kmino_,vf%cfg%kmaxo_
             do j=vf%cfg%jmino_,vf%cfg%jmaxo_
                do i=vf%cfg%imino_,vf%cfg%imaxo_
-                  U(i,j,k)=-twoPi*vf%cfg%ym(j)
-                  V(i,j,k)=+twoPi*vf%cfg%xm(i)
-                  W(i,j,k)=0.0_WP
+                  ! Solid body rotation about z-axis
+                  !U(i,j,k)=-twoPi*vf%cfg%ym(j)
+                  !V(i,j,k)=+twoPi*vf%cfg%xm(i)
+                  !W(i,j,k)=0.0_WP
+                  ! Radially symmetric stagnation flow
+                  U(i,j,k)=+1.0_WP*vf%cfg%x(i)
+                  V(i,j,k)=-2.0_WP*vf%cfg%y(j)
+                  W(i,j,k)=+1.0_WP*vf%cfg%z(k)
                end do
             end do
          end do
       end block initialize_velocity
       
       
-      ! Initialize time tracker with 1 subiterations
+      ! Initialize time tracker - only 1 sub-iteration!
       initialize_timetracker: block
          time=timetracker(amRoot=vf%cfg%amRoot)
          call param_read('Max timestep size',time%dtmax)
@@ -159,8 +137,30 @@ contains
       
       ! Create surfmesh object for interface polygon output
       create_smesh: block
-         smesh=surfmesh(nvar=0,name='plic')
-         call vf%update_surfmesh(smesh)
+         use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
+         integer :: i,j,k,np,nplane
+         smesh=surfmesh(nvar=2,name='plic')
+         smesh%varname(1)='nplane'
+         smesh%varname(2)='thickness'
+         ! Transfer polygons to smesh
+         call vf%update_surfmesh_nowall(smesh)
+         ! Calculate thickness
+         call vf%get_thickness()
+         ! Populate nplane and thickness variables
+         smesh%var(1,:)=1.0_WP
+         np=0
+         do k=vf%cfg%kmin_,vf%cfg%kmax_
+            do j=vf%cfg%jmin_,vf%cfg%jmax_
+               do i=vf%cfg%imin_,vf%cfg%imax_
+                  do nplane=1,getNumberOfPlanes(vf%liquid_gas_interface(i,j,k))
+                     if (getNumberOfVertices(vf%interface_polygon(nplane,i,j,k)).gt.0) then
+                        np=np+1; smesh%var(1,np)=real(getNumberOfPlanes(vf%liquid_gas_interface(i,j,k)),WP)
+                        smesh%var(2,np)=vf%thickness(i,j,k)
+                     end if
+                  end do
+               end do
+            end do
+         end do
       end block create_smesh
       
       
@@ -184,16 +184,62 @@ contains
       create_monitor: block
          ! Prepare some info about fields
          call vf%get_max()
+         call vf%get_cfl(dt=time%dt,U=U,V=V,W=W,cfl=time%cfl)
          ! Create simulation monitor
          mfile=monitor(vf%cfg%amRoot,'simulation')
          call mfile%add_column(time%n,'Timestep number')
          call mfile%add_column(time%t,'Time')
          call mfile%add_column(time%dt,'Timestep size')
+         call mfile%add_column(time%cfl,'Maximum CFL')
          call mfile%add_column(vf%VFmax,'VOF maximum')
          call mfile%add_column(vf%VFmin,'VOF minimum')
          call mfile%add_column(vf%VFint,'VOF integral')
          call mfile%write()
       end block create_monitor
+      
+      
+   contains
+      
+      
+      !> Function that defines a level set function for Zalesak's notched circle problem
+      function levelset_zalesak(xyz,t) result(G)
+         implicit none
+         real(WP), dimension(3),intent(in) :: xyz
+         real(WP), intent(in) :: t
+         real(WP) :: G
+         real(WP) :: c,b,b1,b2,h1,h2
+         c=radius-sqrt(sum((xyz-center)**2))
+         b1=center(1)-0.5_WP*width; b2=center(1)+0.5_WP*width
+         h1=center(2)-radius*cos(asin(0.5_WP*width/radius)); h2=center(2)-radius+height
+         if     (c.ge.0.0_WP.and.xyz(1).le.b1.and.xyz(2).le.h2) then
+            b=b1-xyz(1); G=min(c,b)
+         else if (c.ge.0.0_WP.and.xyz(1).ge.b2.and.xyz(2).le.h2) then
+            b=xyz(1)-b2; G=min(c,b)
+         else if (c.ge.0.0_WP.and.xyz(1).ge.b1.and.xyz(1).le.b2.and.xyz(2).ge.h2) then
+            b=xyz(2)-h2; G=min(c,b)
+         else if (c.ge.0.0_WP.and.xyz(1).le.b1.and.xyz(2).ge.h2) then
+            b=sqrt(sum((xyz-(/b1,h2,0.0_WP/))**2)); G=min(c,b)
+         else if (c.ge.0.0_WP.and.xyz(1).ge.b2.and.xyz(2).ge.h2) then
+            b=sqrt(sum((xyz-(/b2,h2,0.0_WP/))**2)); G=min(c,b)
+         else if (xyz(1).ge.b1.and.xyz(1).le.b2.and.xyz(2).le.h2.and.xyz(2).ge.h1) then
+            G=-min(abs(xyz(1)-b1),abs(xyz(1)-b2),abs(xyz(2)-h2))
+         else if (xyz(1).ge.b1.and.xyz(1).le.b2.and.xyz(2).le.h1) then
+            G=-min(sqrt(sum((xyz-(/b1,h1,0.0_WP/))**2)),sqrt(sum((xyz-(/b2,h1,0.0_WP/))**2)))
+         else
+            G=c
+         end if
+      end function levelset_zalesak
+      
+      
+      !> Function that defines a level set function for a sphere
+      function levelset_sphere(xyz,t) result(G)
+         implicit none
+         real(WP), dimension(3),intent(in) :: xyz
+         real(WP), intent(in) :: t
+         real(WP) :: G
+         G=radius-sqrt(sum((xyz)**2))
+      end function levelset_sphere
+      
       
    end subroutine simulation_init
    
@@ -227,7 +273,29 @@ contains
          
          ! Output to ensight
          if (ens_evt%occurs()) then
-            call vf%update_surfmesh(smesh)
+            update_smesh: block
+               use irl_fortran_interface, only: getNumberOfPlanes,getNumberOfVertices
+               integer :: i,j,k,np,nplane
+               ! Transfer polygons to smesh
+               call vf%update_surfmesh_nowall(smesh)
+               ! Calculate thickness
+               call vf%get_thickness()
+               ! Also populate nplane variable
+               smesh%var(1,:)=1.0_WP
+               np=0
+               do k=vf%cfg%kmin_,vf%cfg%kmax_
+                  do j=vf%cfg%jmin_,vf%cfg%jmax_
+                     do i=vf%cfg%imin_,vf%cfg%imax_
+                        do nplane=1,getNumberOfPlanes(vf%liquid_gas_interface(i,j,k))
+                           if (getNumberOfVertices(vf%interface_polygon(nplane,i,j,k)).gt.0) then
+                              np=np+1; smesh%var(1,np)=real(getNumberOfPlanes(vf%liquid_gas_interface(i,j,k)),WP)
+                              smesh%var(2,np)=vf%thickness(i,j,k)
+                           end if
+                        end do
+                     end do
+                  end do
+               end do
+            end block update_smesh
             call ens_out%write_data(time%t)
          end if
          
@@ -243,20 +311,9 @@ contains
    !> Finalize the NGA2 simulation
    subroutine simulation_final
       implicit none
-      
-      ! Get rid of all objects - need destructors
-      ! monitor
-      ! ensight
-      ! bcond
-      ! timetracker
-      
       ! Deallocate work arrays
       deallocate(U,V,W)
-      
    end subroutine simulation_final
-   
-   
-   
    
    
 end module simulation

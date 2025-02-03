@@ -1,0 +1,35 @@
+# Parallelization
+Partition : 8 1 1
+I/O partition : 1 1 1
+
+# Mesh definition
+Lx : 5
+Ly : 20
+Lz : 20
+nx : 32
+ny : 128
+nz : 128
+
+# Time integration
+Use implicit solver : .true.
+Max timestep size :   5e-2
+Max cfl number :      1.0
+Max time :            20
+
+# Pressure solver
+Pressure tolerance : 1e-4
+Pressure iteration : 30
+
+# Ensight output
+Ensight output period : 2e-1
+
+# Restart handling
+Restart output period : 10
+Restart from : !1.00000E+01
+
+# Flow parameters
+Froude number :   20
+Reynolds number : 500
+Weber number :    50
+Viscosity ratio : 10
+Density ratio :   600

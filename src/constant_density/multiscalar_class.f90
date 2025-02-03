@@ -535,6 +535,11 @@ contains
          ! Initialize the implicit scalar solver
          call this%implicit%init()
          
+      else
+         
+         ! Point to implicit solver linsol object
+         this%implicit=>NULL()
+         
       end if
       
    end subroutine setup
@@ -760,6 +765,15 @@ contains
       real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:)   , intent(in)    :: rhoW  !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k,sti,std,nsc
       
+      ! If no implicit solver available, just divide by density and return
+      if (.not.associated(this%implicit)) then
+         do nsc=1,this%nscalar
+            resSC(:,:,:,nsc)=resSC(:,:,:,nsc)/this%rho
+            call this%cfg%sync(resSC(:,:,:,nsc))
+         end do
+         return
+      end if
+      
       ! Apply implicit treatment for each scalar
       do nsc=1,this%nscalar
          
@@ -813,9 +827,6 @@ contains
          this%implicit%sol=0.0_WP
          call this%implicit%solve()
          resSC(:,:,:,nsc)=this%implicit%sol
-         
-         ! Sync up residual
-         call this%cfg%sync(resSC(:,:,:,nsc))
          
       end do
       

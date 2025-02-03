@@ -369,8 +369,9 @@ contains
          call die('[pardata pushvar] Var does not exist in the data file: '//name)
       end if
    end subroutine pushvar
+   
 
-   !> Push data to a var
+   !> Push integer data to a var
    subroutine pushvarint(this,name,var)
       use messager, only: die
       implicit none
@@ -397,14 +398,15 @@ contains
       integer :: n
       n=this%findvar(name)
       if (n.gt.0) then
-         var=this%var(:,:,:,n)
+         var(this%pg%imin_:this%pg%imax_,this%pg%jmin_:this%pg%jmax_,this%pg%kmin_:this%pg%kmax_)=this%var(this%pg%imin_:this%pg%imax_,this%pg%jmin_:this%pg%jmax_,this%pg%kmin_:this%pg%kmax_,n)
          call this%pg%sync(var)
       else
          call die('[pardata pullvar] Var does not exist in the data file: '//name)
       end if
    end subroutine pullvar
+   
 
-   !> Pull data from a var and synchronize it
+   !> Pull integer data from a var and synchronize it
    subroutine pullvarint(this,name,var)
       use messager, only: die
       implicit none
@@ -414,7 +416,7 @@ contains
       integer :: n
       n=this%findvar(name)
       if (n.gt.0) then
-         var=int(this%var(:,:,:,n))
+         var(this%pg%imin_:this%pg%imax_,this%pg%jmin_:this%pg%jmax_,this%pg%kmin_:this%pg%kmax_)=int(this%var(this%pg%imin_:this%pg%imax_,this%pg%jmin_:this%pg%jmax_,this%pg%kmin_:this%pg%kmax_,n))
          call this%pg%sync(var)
       else
          call die('[pardata pullvar] Var does not exist in the data file: '//name)

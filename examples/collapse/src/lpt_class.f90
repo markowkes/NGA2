@@ -875,6 +875,24 @@ contains
          else
             corr=0.44_WP/24.0_WP*Re
          end if
+      case('Wen-Yu','WY')
+         if (Re.lt.1000.0_WP) then
+            corr=1.0_WP+0.15_WP*Re**(0.687_WP)
+         else
+            corr=0.44_WP/24.0_WP*Re
+         end if
+         corr=corr*fVF**(2.0_WP-3.65_WP)
+      case('Gidaspow')
+         if (fVF.ge.0.8_WP) then
+            if (Re.lt.1000.0_WP) then
+               corr=1.0_WP+0.15_WP*Re**(0.687_WP)
+            else
+               corr=0.44_WP/24.0_WP*Re
+            end if
+            corr=corr*fVF**(2.0_WP-3.65_WP)
+         else
+            corr=4.0_WP/3.0_WP*(150.0_WP*pVF/Re+1.75_WP)
+         end if
       case('Tenneti')
          ! Tenneti and Subramaniam (2011)
          if (Re.lt.1000.0_WP) then
@@ -892,7 +910,13 @@ contains
          else
             corr=0.44_WP/24.0_WP*Re
          end if
-         corr=corr*(78.96_WP*pVF**3-18.63_WP*pVF**2+9.845_WP*pVF+1.0_WP)
+         if (this%rho/frho.gt.20.0_WP) then
+            b1=4.3e-4_WP*Re**2.361_WP
+            b2=(1.05_WP+0.9_WP*b1)/(1.0_WP+b1)
+         else
+            b2=1.0_WP
+         end if
+         corr=corr*(78.96_WP*pVF**3-18.63_WP*pVF**2+9.845_WP*pVF+1.0_WP)**b2
       case('Khalloufi Capecelatro','KC')
          !> Todo
       case default
@@ -937,8 +961,8 @@ contains
       Cadd=0.5_WP*frho/this%rho
       dufdt=facc
       dupdt=acc+this%gravity+p%Acol
-      !acc =acc +Cadd/(1.0_WP+Cadd)*(dufdt-dupdt)
-      !fdbk=fdbk+Cadd/(1.0_WP+Cadd)*(dufdt-dupdt)
+      acc =acc +Cadd/(1.0_WP+Cadd)*(dufdt-dupdt)
+      !fdbk=fdbk+Cadd*(dufdt-(acc+this%gravity+p%Acol))
     end block compute_added_mass
     
     ! Compute fluid torque (assumed Stokes drag)

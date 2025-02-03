@@ -26,11 +26,10 @@ module vfs_class
    integer, parameter, public :: mof=3               !< MOF scheme
    integer, parameter, public :: wmof=4              !< Wide-MOF scheme
    integer, parameter, public :: r2p=5               !< R2P scheme
-   integer, parameter, public :: swartz=6            !< Swartz scheme
-   integer, parameter, public :: youngs=7            !< Youngs' scheme
-   integer, parameter, public :: lvlset=8            !< Levelset-based scheme
-   integer, parameter, public :: plicnet=9           !< PLICnet
-   integer, parameter, public :: r2pnet=10           !< R2Pnet
+   integer, parameter, public :: youngs=6            !< Youngs' scheme
+   integer, parameter, public :: lvlset=7            !< Levelset-based scheme
+   integer, parameter, public :: plicnet=8           !< PLICnet
+   integer, parameter, public :: r2pnet=9            !< R2Pnet
    
    ! List of available interface transport schemes for VF
    integer, parameter, public :: flux=1             !< Flux-based geometric transport
@@ -131,7 +130,11 @@ module vfs_class
       real(WP), dimension(:,:,:,:), allocatable :: edge_normal   !< Edge normal
       
       ! Curvature clipping parameter
-      real(WP) :: maxcurv_times_mesh=1.0_WP               !< Clipping parameter for maximum curvature (classically set to 1, but is larger with r2p since we resolve more)
+      real(WP) :: maxcurv_times_mesh=1.0_WP               !< Clipping parameter for maximum curvature (classically set to 1, but could be larger with r2p since we resolve more)
+      
+      ! Interface smoothing parameters
+      integer  :: smoothing_maxite=0                      !< Maximum number of interface smoothing steps performed after the reconstruction
+      real(WP) :: smoothing_maxres=0.0_WP                 !< Maximum residual for interface smoothing - infinity norm, once reached, smoothing stops
       
       ! IRL objects
       type(ByteBuffer_type) :: send_byte_buffer
@@ -289,7 +292,7 @@ contains
       
       ! Set reconstruction method
       select case (reconstruction_method)
-      case (lvira,elvira,swartz,youngs,mof,wmof,plicnet)
+      case (lvira,elvira,youngs,mof,wmof,plicnet)
          this%reconstruction_method=reconstruction_method
          this%two_planes=.false.
       case (r2p,r2pnet)
@@ -298,8 +301,8 @@ contains
          this%two_planes=.true.
          allocate(this%curv2p(1:2,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%curv2p=0.0_WP
          ! Allocate extra sensors
+         allocate(this%thickness(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%thickness=0.0_WP
          allocate(this%thin_sensor(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%thin_sensor=0.0_WP
-         allocate(this%thickness  (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%thickness  =0.0_WP
          allocate(this%edge_sensor(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%edge_sensor=0.0_WP
          allocate(this%edge_normal(1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); this%edge_normal=0.0_WP
          ! By default, use thin structure removal
@@ -2186,20 +2189,18 @@ contains
       class(vfs), intent(inout) :: this
       ! Reconstruct interface - will need to support various methods
       select case (this%reconstruction_method)
-      case (elvira); call this%build_elvira()
-      case (lvira) ; call this%build_lvira()
-      case (mof)   ; call this%build_mof()
-      case (wmof)  ; call this%build_wmof()
-      case (r2p)   ; call this%build_r2p()
-      case (swartz)
-         call this%build_lvira()
-         call this%smooth_interface()
-      case (youngs); call this%build_youngs()
-      !case (lvlset); call this%build_lvlset()
+      case (elvira) ; call this%build_elvira()
+      case (lvira)  ; call this%build_lvira()
+      case (mof)    ; call this%build_mof()
+      case (wmof)   ; call this%build_wmof()
+      case (r2p)    ; call this%build_r2p()
+      case (youngs) ; call this%build_youngs()
       case (plicnet); call this%build_plicnet()
-      case (r2pnet); call this%build_r2pnet()
+      case (r2pnet) ; call this%build_r2pnet()
       case default; call die('[vfs build interface] Unknown interface reconstruction scheme')
       end select
+      ! Follow with interface smoothing
+      call this%smooth_interface()
    end subroutine build_interface
    
 
@@ -2524,32 +2525,29 @@ contains
    !> Smoothing of an IRL interface based on Swartz-like algorithm
    subroutine smooth_interface(this)
       use mathtools, only: cross_product,normalize,Pi,qrotate
-      use mpi_f08,   only: MPI_ALLREDUCE,MPI_MAX
+      use mpi_f08,   only: MPI_ALLREDUCE,MPI_MAX,MPI_IN_PLACE
       use parallel,  only: MPI_REAL_WP
       implicit none
       class(vfs), intent(inout) :: this
-      integer :: i,j,k,ii,jj,kk,ierr,ite,count
-      real(WP) :: myres,res,mag
+      integer :: n,nn,i,j,k,ii,jj,kk,ierr,ite
+      real(WP) :: surf,res,dist
       real(WP), dimension(3) :: mynorm,mybary,bary,norm,newnorm,r
       real(WP), dimension(4) :: plane,q
       type(RectCub_type) :: cell
-      !real(WP), parameter :: norm_threshold=0.85_WP ! About 30 degrees
-      real(WP), parameter :: norm_threshold=0.0_WP ! 0 degrees
-      real(WP), parameter :: maxres=1.0e-6_WP
-      integer , parameter :: maxite=5
+      real(WP), parameter :: norm_threshold=0.0_WP ! 90 degrees
       
       ! Allocate cell
       call new(cell)
       
       ! Iterate until convergence criterion is met
       res=huge(1.0_WP); ite=0
-      do while (res.ge.maxres.and.ite.lt.maxite)
+      do while (res.ge.this%smoothing_maxres.and.ite.lt.this%smoothing_maxite)
          
          ! Create discontinuous polygon mesh from IRL interface
          call this%polygonalize_interface()
          
          ! Traverse domain and form new normal
-         myres=0.0_WP
+         res=0.0_WP
          do k=this%cfg%kmin_,this%cfg%kmax_
             do j=this%cfg%jmin_,this%cfg%jmax_
                do i=this%cfg%imin_,this%cfg%imax_
@@ -2557,50 +2555,59 @@ contains
                   if (this%mask(i,j,k).ne.0) cycle
                   ! Skip cells without interface
                   if (this%VF(i,j,k).lt.VFlo.or.this%VF(i,j,k).gt.VFhi) cycle
-                  ! Compute polygon barycenter and normal
-                  mybary=calculateCentroid(this%interface_polygon(1,i,j,k))
-                  mynorm=calculateNormal  (this%interface_polygon(1,i,j,k))
-                  ! Loop over our neighbors and form new normal
-                  newnorm=0.0_WP; count=0
-                  do kk=k-1,k+1
-                     do jj=j-1,j+1
-                        do ii=i-1,i+1
-                           ! Skip stencil center
-                           if (ii.eq.i.and.jj.eq.j.and.kk.eq.k) cycle
-                           ! Skip cells without polygons
-                           if (getNumberOfVertices(this%interface_polygon(1,ii,jj,kk)).eq.0) cycle
-                           ! Increment neighbor counter
-                           count=count+1
-                           ! Compute polygon barycenter and normal
-                           bary=calculateCentroid(this%interface_polygon(1,ii,jj,kk))-mybary
-                           norm=calculateNormal  (this%interface_polygon(1,ii,jj,kk))
-                           ! Skip polygons with normal too different from ours
-                           if (dot_product(mynorm,norm).lt.norm_threshold) cycle
-                           ! Build a quaternion to rotate Pi/2 around r axis
-                           r=cross_product(bary,mynorm)
-                           q(1)=cos(0.25_WP*Pi); q(2:4)=sin(0.25_WP*Pi)*normalize(r)
-                           ! Increment our normal estimate using a barycenter-based normal
-                           newnorm=newnorm+qrotate(v=bary,q=q)
+                  ! Get a smoothed normal for each plane
+                  do n=1,getNumberOfPlanes(this%liquid_gas_interface(i,j,k))
+                     ! Skip empty polygon
+                     if (getNumberOfVertices(this%interface_polygon(n,i,j,k)).eq.0) cycle
+                     ! Compute polygon barycenter and normal
+                     mybary=calculateCentroid(this%interface_polygon(n,i,j,k))
+                     mynorm=calculateNormal  (this%interface_polygon(n,i,j,k))
+                     ! Loop over our neighbors and form new normal
+                     newnorm=0.0_WP
+                     do kk=k-1,k+1
+                        do jj=j-1,j+1
+                           do ii=i-1,i+1
+                              ! Look at each polygon
+                              do nn=1,getNumberOfPlanes(this%liquid_gas_interface(ii,jj,kk))
+                                 ! Skip empty polygon
+                                 if (getNumberOfVertices(this%interface_polygon(nn,ii,jj,kk)).eq.0) cycle
+                                 ! Skip my current polygon
+                                 if (ii.eq.i.and.jj.eq.j.and.kk.eq.k.and.nn.eq.n) cycle
+                                 ! Compute polygon barycenter and normal
+                                 surf=      abs(calculateVolume  (this%interface_polygon(nn,ii,jj,kk)))
+                                 bary=normalize(calculateCentroid(this%interface_polygon(nn,ii,jj,kk))-mybary)
+                                 norm=          calculateNormal  (this%interface_polygon(nn,ii,jj,kk))
+                                 ! Skip polygons with normal too different from ours
+                                 if (dot_product(mynorm,norm).lt.norm_threshold) cycle
+                                 ! Build a quaternion to rotate Pi/2 around r axis
+                                 r=normalize(cross_product(bary,mynorm))
+                                 q(1)=cos(0.25_WP*Pi); q(2:4)=sin(0.25_WP*Pi)*r
+                                 ! Increment our normal estimate using a barycenter-based normal
+                                 newnorm=newnorm+qrotate(v=bary,q=q)*surf
+                              end do
+                           end do
                         end do
                      end do
+                     ! Ensure we have a meaningful normal vector
+                     if (norm2(newnorm).le.epsilon(1.0_WP)) cycle
+                     ! Normalize new normal vector
+                     newnorm=normalize(newnorm)
+                     ! Monitor convergence
+                     res=max(res,1.0_WP-dot_product(mynorm,newnorm))
+                     ! Adjust plane orientation while keeping position unchanged
+                     plane=getPlane(this%liquid_gas_interface(i,j,k),n-1)
+                     dist=plane(4)+dot_product(newnorm-plane(1:3),[this%cfg%xm(i),this%cfg%ym(j),this%cfg%zm(k)])
+                     call setPlane(this%liquid_gas_interface(i,j,k),n-1,newnorm,dist)
+                     ! Readjust plane position to ensure exact conservation
+                     call construct_2pt(cell,[this%cfg%x(i),this%cfg%y(j),this%cfg%z(k)],[this%cfg%x(i+1),this%cfg%y(j+1),this%cfg%z(k+1)])
+                     call matchVolumeFraction(cell,this%VF(i,j,k),this%liquid_gas_interface(i,j,k))
                   end do
-                  ! Set minimum number of neighbors to 1
-                  if (count.eq.0) cycle
-                  ! Normalize new normal vector
-                  newnorm=normalize(newnorm)
-                  ! Adjust plane orientation (not position yet)
-                  plane=getPlane(this%liquid_gas_interface(i,j,k),0)
-                  call setPlane(this%liquid_gas_interface(i,j,k),0,newnorm,plane(4))
-                  call construct_2pt(cell,[this%cfg%x(i),this%cfg%y(j),this%cfg%z(k)],[this%cfg%x(i+1),this%cfg%y(j+1),this%cfg%z(k+1)])
-                  call matchVolumeFraction(cell,this%VF(i,j,k),this%liquid_gas_interface(i,j,k))
-                  ! Monitor convergence
-                  myres=max(myres,1.0_WP-dot_product(mynorm,newnorm))
                end do
             end do
          end do
          
          ! Collect maximum residual and increment iteration counter
-         call MPI_ALLREDUCE(myres,res,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); ite=ite+1
+         call MPI_ALLREDUCE(MPI_IN_PLACE,res,1,MPI_REAL_WP,MPI_MAX,this%cfg%comm,ierr); ite=ite+1
          if (this%cfg%amRoot) print*,'ite=',ite,'residual=',res
          
          ! Synchronize across boundaries
@@ -2686,6 +2693,8 @@ contains
                      do ii=i-1,i+1
                         ! Skip true wall cells - bconds can be used here
                         if (this%mask(ii,jj,kk).eq.1) cycle
+                        ! Also skip mostly IB cells
+                        if (this%cfg%VF(ii,jj,kk).lt.0.1_WP.and.(ii.ne.i.or.jj.ne.j.or.kk.ne.k)) cycle
                         ! Add cell to neighborhood
                         call addMember(neighborhood,neighborhood_cells(ind),liquid_volume_fraction(ind))
                         ! Build the cell
@@ -3176,15 +3185,22 @@ contains
       class(vfs), intent(inout) :: this
       integer(IRL_SignedIndex_t) :: i,j,k
       integer :: ind,ii,jj,kk,icenter
-      type(R2PNeigh_RectCub_type)   :: nh_r2p
+      type(R2PNeigh_RectCub_type) :: nh_r2p
       type(RectCub_type), dimension(0:26) :: neighborhood_cells
       real(IRL_double)  , dimension(0:26) :: liquid_volume_fraction
       type(SepVM_type)  , dimension(0:26) :: separated_volume_moments
       type(VMAN_type) :: volume_moments_and_normal
       
-      real(WP) :: surface_area,area
+      real(WP) :: surface_area,dot_result,surf_dot_pos_sum,surf_dot_neg_sum
       real(WP), dimension(3) :: surface_norm
-      real(WP), dimension(:,:,:), allocatable :: surf_norm_mag,tmp
+      real(WP), dimension(:,:,:), allocatable :: tmp,tmp1
+      real(WP), dimension(:,:), allocatable :: normals_adj
+      real(WP), dimension(:), allocatable :: area_adj
+      real(WP), dimension(:), allocatable :: norm_pos_loc,norm_neg_loc
+      integer :: n,nn,size_adj,size_loc
+      
+      real(WP), dimension(:,:,:), allocatable :: norm_pos
+      real(WP), dimension(:,:,:), allocatable :: norm_neg
       
       real(IRL_double), dimension(3) :: initial_norm
       real(IRL_double) :: initial_dist
@@ -3209,40 +3225,87 @@ contains
          call new(separated_volume_moments(i))
       end do
       
-      ! Compute magnitude of the surface-averaged normal vector
-      allocate(surf_norm_mag(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); surf_norm_mag=0.0_WP
-      do k=this%cfg%kmin_,this%cfg%kmax_; do j=this%cfg%jmin_,this%cfg%jmax_; do i=this%cfg%imin_,this%cfg%imax_
-         ! Skip wall/bcond/full cells
-         if (this%mask(i,j,k).ne.0) cycle
-         if (this%VF(i,j,k).lt.VFlo.or.this%VF(i,j,k).gt.VFhi) cycle
-         ! Extract average normal magnitude from neighborhood surface moments
-         surface_area=0.0_WP; surface_norm=0.0_WP
-         do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
-            do ind=0,getSize(this%triangle_moments_storage(ii,jj,kk))-1
-               call getMoments(this%triangle_moments_storage(ii,jj,kk),ind,volume_moments_and_normal)
-               surface_area=surface_area+getVolume(volume_moments_and_normal)
-               surface_norm=surface_norm+getNormal(volume_moments_and_normal)
+      ! Zonghao's colinearity metric
+      allocate(norm_pos(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); norm_pos=0.0_WP
+      allocate(norm_neg(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); norm_neg=0.0_WP
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               ! Skip wall/bcond/full cells
+               if (this%mask(i,j,k).ne.0) cycle
+               if (this%VF(i,j,k).lt.VFlo.or.this%VF(i,j,k).gt.VFhi) cycle
+               ! Count the number of triangles
+               surface_area=0.0_WP; surface_norm=0.0_WP; size_adj=0
+               do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
+                  size_adj=size_adj+getSize(this%triangle_moments_storage(ii,jj,kk))
+               end do; end do; end do
+               ! Allocate local storage
+               allocate(normals_adj (1:size_adj,1:3)); normals_adj =0.0_WP
+               allocate(area_adj    (1:size_adj));     area_adj    =0.0_WP
+               allocate(norm_pos_loc(1:size_adj));     norm_pos_loc=0.0_WP
+               allocate(norm_neg_loc(1:size_adj));     norm_neg_loc=0.0_WP
+               ! Get surface area and normals of each triangle
+               size_adj=0
+               do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
+                  do ind=0,getSize(this%triangle_moments_storage(ii,jj,kk))-1
+                     call getMoments(this%triangle_moments_storage(ii,jj,kk),ind,volume_moments_and_normal)
+                     size_adj=size_adj+1
+                     area_adj(size_adj)     =getVolume(volume_moments_and_normal)
+                     normals_adj(size_adj,:)=normalize(getNormal(volume_moments_and_normal))
+                  end do
+               end do; end do; end do
+               surface_area=sum(area_adj)
+               if (surface_area.gt.0.0_WP) then
+                  surf_dot_pos_sum=0.0_WP; surf_dot_neg_sum=0.0_WP
+                  ! Get the postive and negative projected surface area
+                  do n=1,size_adj
+                     do nn=1,size_adj
+                        if (n.eq.nn) cycle
+                        dot_result=dot_product(normals_adj(n,:),normals_adj(nn,:))
+                        if (dot_result.ge.0.0_WP) norm_pos_loc(n)=norm_pos_loc(n)+area_adj(nn)*dot_result
+                        if (dot_result.lt.0.0_WP) norm_neg_loc(n)=norm_neg_loc(n)-area_adj(nn)*dot_result
+                     end do
+                     norm_pos_loc(n)=norm_pos_loc(n)/(surface_area-area_adj(n))
+                     norm_neg_loc(n)=norm_neg_loc(n)/(surface_area-area_adj(n))
+                  end do
+                  ! Get the norms based on surface area weighting of the projected surface area
+                  do n=1,size_adj
+                     surf_dot_pos_sum=surf_dot_pos_sum+norm_pos_loc(n)*area_adj(n)
+                     surf_dot_neg_sum=surf_dot_neg_sum+norm_neg_loc(n)*area_adj(n)
+                  end do
+                  norm_pos(i,j,k)=surf_dot_pos_sum/surface_area
+                  norm_neg(i,j,k)=surf_dot_neg_sum/surface_area
+               end if
+               ! Deallocate
+               deallocate(normals_adj,area_adj,norm_pos_loc,norm_neg_loc)
             end do
-         end do; end do; end do
-         if (surface_area.gt.0.0_WP) surf_norm_mag(i,j,k)=norm2(surface_norm/surface_area)
-      end do; end do; end do
-      call this%cfg%sync(surf_norm_mag)
-      
-      ! Apply an extra step of surface smoothing to our normal magnitude
-      allocate(tmp(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); tmp=0.0_WP
-      do k=this%cfg%kmin_,this%cfg%kmax_; do j=this%cfg%jmin_,this%cfg%jmax_; do i=this%cfg%imin_,this%cfg%imax_
-         ! Skip wall/bcond/full cells
-         if (this%mask(i,j,k).ne.0) cycle
-         if (this%VF(i,j,k).lt.VFlo.or.this%VF(i,j,k).gt.VFhi) cycle
-         ! Surface-averaged normal magnitude
-         surface_area=0.0_WP
-         do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
-            surface_area=surface_area+this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)
-            tmp(i,j,k)  =tmp(i,j,k)  +this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)*surf_norm_mag(ii,jj,kk)
-         end do; end do; end do
-         if (surface_area.gt.0.0_WP) tmp(i,j,k)=tmp(i,j,k)/surface_area
-      end do; end do; end do
-      call this%cfg%sync(tmp); surf_norm_mag=tmp; deallocate(tmp)
+         end do
+      end do
+      call this%cfg%sync(norm_pos);call this%cfg%sync(norm_neg)
+      ! Filter metric
+      allocate(tmp (this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); tmp =0.0_WP
+      allocate(tmp1(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_)); tmp1=0.0_WP
+      do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               ! Skip wall/bcond/full cells
+               if (this%mask(i,j,k).ne.0) cycle
+               if (this%VF(i,j,k).lt.VFlo.or.this%VF(i,j,k).gt.VFhi) cycle
+               ! Surface-averaged normal magnitude
+               surface_area=0.0_WP
+               do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
+                  surface_area=surface_area+this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)
+                  tmp(i,j,k)  =tmp(i,j,k)  +this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)*norm_pos(ii,jj,kk)
+                  tmp1(i,j,k) =tmp1(i,j,k) +this%SD(ii,jj,kk)*this%cfg%vol(ii,jj,kk)*norm_neg(ii,jj,kk)
+               end do; end do; end do
+               if (surface_area.gt.0.0_WP) then
+                  tmp(i,j,k) =tmp(i,j,k) /surface_area
+                  tmp1(i,j,k)=tmp1(i,j,k)/surface_area
+               end if
+            end do
+         end do
+      end do
+      call this%cfg%sync(tmp); call this%cfg%sync(tmp1); norm_pos=tmp; norm_neg=tmp1; deallocate(tmp,tmp1)
       
       ! Traverse domain and reconstruct interface
       do k=this%cfg%kmin_,this%cfg%kmax_; do j=this%cfg%jmin_,this%cfg%jmax_; do i=this%cfg%imin_,this%cfg%imax_
@@ -3257,93 +3320,8 @@ contains
             cycle
          end if
          
-         ! If a wall is in our neighborhood, apply PLICNET
-         !!! ALSO FORCING PLICNET IN MY NOZZLE HERE
-         is_wall=.false.
-         do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
-            if (this%mask(ii,jj,kk).eq.1) is_wall=.true.
-         end do; end do; end do
-         if (is_wall.or.this%cfg%xm(i).lt.0.0001_WP) then
-            ! PLICNET
-            ! Liquid-gas symmetry
-            flip=.false.; if (this%VF(i,j,k).ge.0.5_WP) flip=.true.
-            m000=0; m100=0; m010=0; m001=0
-            ! Construct neighborhood of volume moments
-            if (flip) then
-               do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k)))=1.0_WP-this%VF(ii,jj,kk)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+1)=(this%Gbary(1,ii,jj,kk)-this%cfg%xm(ii))/this%cfg%dx(ii)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+2)=(this%Gbary(2,ii,jj,kk)-this%cfg%ym(jj))/this%cfg%dy(jj)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+3)=(this%Gbary(3,ii,jj,kk)-this%cfg%zm(kk))/this%cfg%dz(kk)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+4)=(this%Lbary(1,ii,jj,kk)-this%cfg%xm(ii))/this%cfg%dx(ii)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+5)=(this%Lbary(2,ii,jj,kk)-this%cfg%ym(jj))/this%cfg%dy(jj)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+6)=(this%Lbary(3,ii,jj,kk)-this%cfg%zm(kk))/this%cfg%dz(kk)
-                  ! Calculate geometric moments of neighborhood
-                  m000=m000+(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))))
-                  m100=m100+(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+1)+(ii-i))*(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))))
-                  m010=m010+(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+2)+(jj-j))*(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))))
-                  m001=m001+(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+3)+(kk-k))*(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))))
-               end do; end do; end do
-            else
-               do kk=k-1,k+1; do jj=j-1,j+1; do ii=i-1,i+1
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k)))=this%VF(ii,jj,kk)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+1)=(this%Lbary(1,ii,jj,kk)-this%cfg%xm(ii))/this%cfg%dx(ii)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+2)=(this%Lbary(2,ii,jj,kk)-this%cfg%ym(jj))/this%cfg%dy(jj)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+3)=(this%Lbary(3,ii,jj,kk)-this%cfg%zm(kk))/this%cfg%dz(kk)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+4)=(this%Gbary(1,ii,jj,kk)-this%cfg%xm(ii))/this%cfg%dx(ii)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+5)=(this%Gbary(2,ii,jj,kk)-this%cfg%ym(jj))/this%cfg%dy(jj)
-                  moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+6)=(this%Gbary(3,ii,jj,kk)-this%cfg%zm(kk))/this%cfg%dz(kk)
-                  ! Calculate geometric moments of neighborhood
-                  m000=m000+(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))))
-                  m100=m100+(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+1)+(ii-i))*(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))))
-                  m010=m010+(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+2)+(jj-j))*(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))))
-                  m001=m001+(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))+3)+(kk-k))*(moments(7*((ii+1-i)*9+(jj+1-j)*3+(kk+1-k))))
-               end do; end do; end do
-            end if
-            ! Calculate geometric center of neighborhood
-            center=[m100,m010,m001]/m000
-            ! Symmetry about Cartesian planes
-            call reflect_moments(moments,center,direction)
-            ! Get PLIC normal vector from neural network
-            call get_normal(moments,normal); normal=normalize(normal)
-            ! Rotate normal vector to original octant
-            if (direction.eq.1) then
-               normal(0)=-normal(0)
-            else if (direction.eq.2) then
-               normal(1)=-normal(1)
-            else if (direction.eq.3) then
-               normal(2)=-normal(2)
-            else if (direction.eq.4) then
-               normal(0)=-normal(0)
-               normal(1)=-normal(1)
-            else if (direction.eq.5) then
-               normal(0)=-normal(0)
-               normal(2)=-normal(2)
-            else if (direction.eq.6) then
-               normal(1)=-normal(1)
-               normal(2)=-normal(2)
-            else if (direction.eq.7) then
-               normal(0)=-normal(0)
-               normal(1)=-normal(1)
-               normal(2)=-normal(2)
-            end if
-            if (.not.flip) then
-               normal(0)=-normal(0)
-               normal(1)=-normal(1)
-               normal(2)=-normal(2)
-            end if
-            ! Locate PLIC plane in cell
-            call construct_2pt(cell,[this%cfg%x(i),this%cfg%y(j),this%cfg%z(k)],[this%cfg%x(i+1),this%cfg%y(j+1),this%cfg%z(k+1)])
-            initial_dist=dot_product(normal,[this%cfg%xm(i),this%cfg%ym(j),this%cfg%zm(k)])
-            call setNumberOfPlanes(this%liquid_gas_interface(i,j,k),1)
-            call setPlane(this%liquid_gas_interface(i,j,k),0,normal,initial_dist)
-            call matchVolumeFraction(cell,this%VF(i,j,k),this%liquid_gas_interface(i,j,k))
-            ! Done with that cell
-            cycle
-         end if
-         
          ! If the neighborhood normals are sufficiently consistent, just use PLICNET
-         if (surf_norm_mag(i,j,k).gt.this%twoplane_thld2) then
+         if ((norm_pos(i,j,k)-norm_neg(i,j,k)).ge.0.5_WP.or.(((norm_pos(i,j,k)-norm_neg(i,j,k)).lt.0.5_WP).and.(norm_pos(i,j,k)+norm_neg(i,j,k).lt.0.75_WP))) then
             ! PLICNET
             ! Liquid-gas symmetry
             flip=.false.; if (this%VF(i,j,k).ge.0.5_WP) flip=.true.
@@ -3466,8 +3444,8 @@ contains
       ! Synchronize across boundaries
       call this%sync_interface()
       
-      ! Deallocate
-      deallocate(surf_norm_mag)
+      ! Deallocate metric
+      deallocate(norm_pos,norm_neg)
       
    end subroutine build_r2pnet
 
@@ -3942,13 +3920,9 @@ contains
       do k=this%cfg%kmino_,this%cfg%kmaxo_
          do j=this%cfg%jmino_,this%cfg%jmaxo_
             do i=this%cfg%imino_,this%cfg%imaxo_
-               ! Handle pure wall cells
-               if (this%mask(i,j,k).eq.1) then
-                  this%VF(i,j,k)     =0.0_WP
-                  this%Lbary(:,i,j,k)=[this%cfg%xm(i),this%cfg%ym(j),this%cfg%zm(k)]
-                  this%Gbary(:,i,j,k)=[this%cfg%xm(i),this%cfg%ym(j),this%cfg%zm(k)]
-                  cycle
-               end if
+               ! Handle pure wall cells - leave whatever was there
+               ! (makes sense since we may want to pin the interface by manually setting VF in wall cells)
+               if (this%mask(i,j,k).eq.1) cycle
                ! Form the grid cell
                call construct_2pt(cell,[this%cfg%x(i),this%cfg%y(j),this%cfg%z(k)],[this%cfg%x(i+1),this%cfg%y(j+1),this%cfg%z(k+1)])
                ! Cut it by the current interface(s)
