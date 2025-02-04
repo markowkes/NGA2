@@ -645,14 +645,13 @@ contains
       implicit none
       integer :: i,j,k
       real(WP), dimension(3) :: nw,mynorm
-      real(WP) :: mysurf,mycos,cos_contact_angle,dcorr
-      real(WP), parameter :: beta=0.5_WP
+      real(WP) :: mysurf,mycos,cos_contact_angle,coeff
       
       ! Precalculate cos(contact angle)
       cos_contact_angle=cos(fs%contact_angle)
-
-      ! Precalculate dynamic correction (what happens if contact_angle>=Pi/2...)
-      dcorr=min(1.0_WP/(1.0_WP+3.0_WP*beta*log(fs%cfg%min_meshsize/Lslip)*tan(fs%contact_angle)**(-1.0_WP)),1.0_WP)
+      
+      ! Precalculate Cox-Voinov coefficient
+      coeff=fs%contact_angle**2/(3.0_WP*sin(fs%contact_angle)*log(fs%cfg%min_meshsize/Lslip))
       
       ! Loop over domain and identify cells that require contact angle model
       do k=fs%cfg%kmin_,fs%cfg%kmax_+1
@@ -676,7 +675,7 @@ contains
                      ! Project normal in wall-tangent direction
                      mynorm=normalize(mynorm-mycos*nw)
                      ! Apply slip velocity model
-                     fs%U(i,j-1,k)=dcorr*beta*fs%sigma/fs%visc_l*(mycos-cos_contact_angle)*(vf%VF(i,j,k)-vf%VF(i-1,j,k))
+                     fs%U(i,j-1,k)=coeff*fs%sigma/fs%visc_l*(mycos-cos_contact_angle)*(vf%VF(i,j,k)-vf%VF(i-1,j,k))
                   end if
                end if
                
@@ -697,7 +696,7 @@ contains
                      ! Project normal in wall-tangent direction
                      mynorm=normalize(mynorm-mycos*nw)
                      ! Apply slip velocity model
-                     fs%W(i,j-1,k)=dcorr*beta*fs%sigma/fs%visc_l*(mycos-cos_contact_angle)*(vf%VF(i,j,k)-vf%VF(i,j,k-1))
+                     fs%W(i,j-1,k)=coeff*fs%sigma/fs%visc_l*(mycos-cos_contact_angle)*(vf%VF(i,j,k)-vf%VF(i,j,k-1))
                   end if
                end if
                

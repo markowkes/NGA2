@@ -1,7 +1,7 @@
-module periodicpipe_class
+module periodicchannel_class
    use precision,         only: WP
-   use ibconfig_class,    only: ibconfig
-   use fft3d_class,       only: fft3d
+   use config_class,      only: config
+   use fft2d_class,       only: fft2d
    use ddadi_class,       only: ddadi
    use incomp_class,      only: incomp
    use sgsmodel_class,    only: sgsmodel
@@ -13,19 +13,19 @@ module periodicpipe_class
    implicit none
    private
    
-   public :: periodicpipe
+   public :: periodicchannel
    
-   !> periodicpipe object
-   type :: periodicpipe
+   !> periodicchannel object
+   type :: periodicchannel
       
       !> Config
-      type(ibconfig) :: cfg
+      type(config) :: cfg
       
       !> Flow solver
       type(incomp)      :: fs     !< Incompressible flow solver
-      type(fft3d)       :: ps     !< Fourier-accelerated pressure solver
+      type(fft2d)       :: ps     !< Fourier-accelerated pressure solver
       type(timetracker) :: time   !< Time info
-
+      
       !> Implicit solver
       logical     :: use_implicit !< Is an implicit solver used?
       type(ddadi) :: vs           !< DDADI solver for velocity
@@ -33,22 +33,22 @@ module periodicpipe_class
       !> SGS model
       logical        :: use_sgs   !< Is an LES model used?
       type(sgsmodel) :: sgs       !< SGS model for eddy viscosity
+      real(WP), dimension(:,:,:,:,:), allocatable :: gradU !< Velocity gradient
       
       !> Ensight postprocessing
-      !type(ensight) :: ens_out    !< Event trigger for Ensight output
-      !type(event)   :: ens_evt    !< Ensight output for flow variables
+      type(ensight) :: ens_out    !< Event trigger for Ensight output
+      type(event)   :: ens_evt    !< Ensight output for flow variables
       
       !> Simulation monitoring files
       type(monitor) :: mfile      !< General simulation monitoring
-      !type(monitor) :: cflfile    !< CFL monitoring
-      
+      type(monitor) :: cflfile    !< CFL monitoring
+
       !> Work arrays
-      real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
       real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
       real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities
       
       !> Flow conditions
-      real(WP) :: visc,Ubulk,meanU,bforce
+      real(WP) :: visc,meanU,bforce
       
       !> Provide a pardata object for restarts
       logical       :: restarted
@@ -59,53 +59,31 @@ module periodicpipe_class
       procedure :: init                            !< Initialize pipe simulation
       procedure :: step                            !< Advance pipe simulation by one time step
       procedure :: final                           !< Finalize pipe simulation
-   end type periodicpipe
-
+   end type periodicchannel
+   
 contains
    
    
-   !> Initialization of periodicpipe simulation
-   subroutine init(this,group)
-      use mpi_f08, only: MPI_Group
-      use param,   only: param_read
+   !> Initialization of periodicchannel simulation
+   subroutine init(this)
+      use parallel, only: group
+      use param,    only: param_read
       implicit none
-      class(periodicpipe), intent(inout) :: this
-      type(MPI_Group), intent(in) :: group
+      class(periodicchannel), intent(inout) :: this
       
-
+      
       ! Initialize the config
       initialize_config: block
-         use sgrid_class,    only: sgrid,cartesian
-         use ibconfig_class, only: sharp
-         integer :: i,j,k,nx,ny,nz,no
-         real(WP) :: Lx,Ly,Lz,dx,D
+         use sgrid_class, only: sgrid,cartesian
+         integer :: i,j,k,nx,ny,nz
+         real(WP) :: Lx,Ly,Lz
          real(WP), dimension(:), allocatable :: x,y,z
          type(sgrid) :: grid
          integer, dimension(3) :: partition
-         
-         ! Nominal parameters
-         D=1.0_WP !< Unity diameter
-         no=2     !< Allow for two dead cells for IB to take effect
-         
-         ! Read in grid definition
-         call param_read('[Pipe] Length',Lx)
-         call param_read('[Pipe] nx',nx); allocate(x(nx+1))
-         call param_read('[Pipe] ny',ny); allocate(y(ny+1))
-         call param_read('[Pipe] nz',nz); allocate(z(nz+1))
-         dx=Lx/real(nx,WP)
-         
-         ! Adjust domain size to account for extra cells
-         if (ny.gt.1) then
-            Ly=D+real(2*no,WP)*D/real(ny-2*no,WP)
-         else
-            Ly=dx
-         end if
-         if (nz.gt.1) then
-            Lz=D+real(2*no,WP)*D/real(ny-2*no,WP)
-         else
-            Lz=dx
-         end if
-         
+         ! Grid specification
+         call param_read('Lx',Lx); call param_read('nx',nx); allocate(x(nx+1))
+         Ly=1.0_WP;                call param_read('ny',ny); allocate(y(ny+1))
+         call param_read('Lz',Lz); call param_read('nz',nz); allocate(z(nz+1))
          ! Create simple rectilinear grid
          do i=1,nx+1
             x(i)=real(i-1,WP)/real(nx,WP)*Lx
@@ -116,37 +94,24 @@ contains
          do k=1,nz+1
             z(k)=real(k-1,WP)/real(nz,WP)*Lz-0.5_WP*Lz
          end do
-         
          ! General serial grid object
-         grid=sgrid(coord=cartesian,no=1,x=x,y=y,z=z,xper=.true.,yper=.true.,zper=.true.,name='pipe')
-         
+         grid=sgrid(coord=cartesian,no=1,x=x,y=y,z=z,xper=.true.,yper=.false.,zper=.true.,name='channel')
          ! Read in partition
-         call param_read('[Pipe] Partition',partition,short='p')
-         
+         call param_read('Partition',partition,short='p')
          ! Create partitioned grid
-         this%cfg=ibconfig(grp=group,decomp=partition,grid=grid)
-         
-         ! Create masks for this config
-         do k=this%cfg%kmino_,this%cfg%kmaxo_
-            do j=this%cfg%jmino_,this%cfg%jmaxo_
-               do i=this%cfg%imino_,this%cfg%imaxo_
-                  this%cfg%Gib(i,j,k)=sqrt(this%cfg%ym(j)**2+this%cfg%zm(k)**2)-0.5_WP*D
-               end do
-            end do
-         end do
-         ! Get normal vector
-         call this%cfg%calculate_normal()
-         ! Get VF field
-         call this%cfg%calculate_vf(method=sharp,allow_zero_vf=.false.)
-         
+         this%cfg=config(grp=group,decomp=partition,grid=grid)
+         ! Create walls top and bottom
+         this%cfg%VF=0.0_WP
+         this%cfg%VF(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_)=1.0_WP
+         call this%cfg%sync(this%cfg%VF)
       end block initialize_config
       
-
+      
       ! Initialize time tracker with 2 subiterations
       initialize_timetracker: block
          this%time=timetracker(amRoot=this%cfg%amRoot)
-         call param_read('[Pipe] Max timestep size',this%time%dtmax)
-         call param_read('[Pipe] Max cfl number',this%time%cflmax)
+         call param_read('Max timestep size',this%time%dtmax)
+         call param_read('Max cfl number',this%time%cflmax)
          this%time%dt=this%time%dtmax
          this%time%itmax=2
       end block initialize_timetracker
@@ -162,9 +127,9 @@ contains
          this%visc=1.0_WP/this%visc
          this%fs%visc=this%visc
          ! Configure pressure solver
-         this%ps=fft3d(cfg=this%cfg,name='Pressure',nst=7)
+         this%ps=fft2d(cfg=this%cfg,name='Pressure',nst=7)
          ! Check if implicit velocity solver is used
-         call param_read('[Pipe] Use implicit solver',this%use_implicit)
+         call param_read('Use implicit solver',this%use_implicit)
          if (this%use_implicit) then
             ! Configure implicit solver
             this%vs=ddadi(cfg=this%cfg,name='Velocity',nst=7)
@@ -179,7 +144,6 @@ contains
       
       ! Allocate work arrays
       allocate_work_arrays: block
-         allocate(this%gradU(1:3,1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%resU(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%resV(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
          allocate(this%resW(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
@@ -194,33 +158,22 @@ contains
          use mathtools, only: twoPi
          use random,    only: random_uniform
          integer :: i,j,k
-         real(WP) :: amp,VFx,VFy,VFz
+         real(WP) :: amp
          ! Initial fields
-         this%Ubulk=1.0_WP
-         this%fs%U=this%Ubulk; this%fs%V=0.0_WP; this%fs%W=0.0_WP; this%fs%P=0.0_WP
-         this%meanU=this%Ubulk
-         this%bforce=0.0_WP
-         ! For faster transition
-         call param_read('[Pipe] Fluctuation amp',amp,default=0.2_WP)
+         where (this%fs%umask.eq.0) this%fs%U=1.0_WP
+         this%fs%V=0.0_WP; this%fs%W=0.0_WP; this%fs%P=0.0_WP
+         this%meanU=1.0_WP; this%bforce=0.0_WP
+         ! Add fluctuations for faster transition
+         call param_read('Fluctuation amp',amp,default=0.2_WP)
          do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
             do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
                do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-                  ! Add fluctuations for faster transition
-                  this%fs%U(i,j,k)=this%fs%U(i,j,k)+this%Ubulk*random_uniform(lo=-0.5_WP*amp,hi=0.5_WP*amp)+amp*this%Ubulk*cos(8.0_WP*twoPi*this%fs%cfg%zm(k)/this%fs%cfg%zL)*cos(8.0_WP*twoPi*this%fs%cfg%ym(j)/this%fs%cfg%yL)
-                  this%fs%V(i,j,k)=this%fs%V(i,j,k)+this%Ubulk*random_uniform(lo=-0.5_WP*amp,hi=0.5_WP*amp)+amp*this%Ubulk*cos(8.0_WP*twoPi*this%fs%cfg%xm(i)/this%fs%cfg%xL)
-                  this%fs%W(i,j,k)=this%fs%W(i,j,k)+this%Ubulk*random_uniform(lo=-0.5_WP*amp,hi=0.5_WP*amp)+amp*this%Ubulk*cos(8.0_WP*twoPi*this%fs%cfg%xm(i)/this%fs%cfg%xL)
-                  ! Remove values in the wall
-                  VFx=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
-                  VFy=sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
-                  VFz=sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
-                  this%fs%U(i,j,k)=this%fs%U(i,j,k)*VFx
-                  this%fs%V(i,j,k)=this%fs%V(i,j,k)*VFy
-                  this%fs%W(i,j,k)=this%fs%W(i,j,k)*VFz
+                  this%fs%U(i,j,k)=this%fs%U(i,j,k)+random_uniform(lo=-0.5_WP*amp,hi=0.5_WP*amp)+amp*cos(8.0_WP*twoPi*this%fs%cfg%xm(i)/this%fs%cfg%xL)*cos(8.0_WP*twoPi*this%fs%cfg%zm(k)/this%fs%cfg%zL)
+                  this%fs%W(i,j,k)=this%fs%W(i,j,k)+random_uniform(lo=-0.5_WP*amp,hi=0.5_WP*amp)+amp*cos(8.0_WP*twoPi*this%fs%cfg%xm(i)/this%fs%cfg%xL)*cos(8.0_WP*twoPi*this%fs%cfg%zm(k)/this%fs%cfg%zL)
                end do
             end do
          end do
          call this%fs%cfg%sync(this%fs%U)
-         call this%fs%cfg%sync(this%fs%V)
          call this%fs%cfg%sync(this%fs%W)
          ! Compute cell-centered velocity
          call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
@@ -231,11 +184,14 @@ contains
       
       ! Create an LES model
       create_sgs: block
-         call param_read('[Pipe] Use SGS model',this%use_sgs)
-         if (this%use_sgs) this%sgs=sgsmodel(cfg=this%fs%cfg,umask=this%fs%umask,vmask=this%fs%vmask,wmask=this%fs%wmask)
+         call param_read('Use SGS model',this%use_sgs)
+         if (this%use_sgs) then
+            allocate(this%gradU(1:3,1:3,this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+            this%sgs=sgsmodel(cfg=this%fs%cfg,umask=this%fs%umask,vmask=this%fs%vmask,wmask=this%fs%wmask)
+         end if
       end block create_sgs
-
-
+      
+      
       ! Handle restart here
       perform_restart: block
          use string,  only: str_medium
@@ -243,12 +199,12 @@ contains
          character(len=str_medium) :: filename
          integer, dimension(3) :: iopartition
          ! Create event for saving restart files
-         this%save_evt=event(this%time,'Pipe restart output')
-         call param_read('[Pipe] Restart output period',this%save_evt%tper)
+         this%save_evt=event(this%time,'Channel restart output')
+         call param_read('Restart output period',this%save_evt%tper)
          ! Read in the partition for I/O
-         call param_read('[Pipe] I/O partition',iopartition)
+         call param_read('I/O partition',iopartition)
          ! Check if a restart file was provided
-         call param_read('[Pipe] Restart from',filename,default='')
+         call param_read('Restart from',filename,default='')
          this%restarted=.false.; if (len_trim(filename).gt.0) this%restarted=.true.
          ! Perform pardata initialization
          if (this%restarted) then
@@ -281,20 +237,19 @@ contains
       
       
       ! Add Ensight output
-      !create_ensight: block
-      !   ! Create Ensight output from cfg
-      !   this%ens_out=ensight(cfg=this%cfg,name='pipe')
-      !   ! Create event for Ensight output
-      !   this%ens_evt=event(time=this%time,name='Ensight output')
-      !   call param_read('Ensight output period',this%ens_evt%tper)
-      !   ! Add variables to output
-      !   call this%ens_out%add_vector('velocity',this%Ui,this%Vi,this%Wi)
-      !   call this%ens_out%add_scalar('Gib',this%cfg%Gib)
-      !   call this%ens_out%add_scalar('pressure',this%fs%P)
-      !   if (this%use_sgs) call this%ens_out%add_scalar('visc_sgs',this%sgs%visc)
-      !   ! Output to ensight
-      !   if (this%ens_evt%occurs()) call this%ens_out%write_data(this%time%t)
-      !end block create_ensight
+      create_ensight: block
+         ! Create Ensight output from cfg
+         this%ens_out=ensight(cfg=this%cfg,name='channel')
+         ! Create event for Ensight output
+         this%ens_evt=event(time=this%time,name='Ensight output')
+         call param_read('Ensight output period',this%ens_evt%tper)
+         ! Add variables to output
+         call this%ens_out%add_vector('velocity',this%Ui,this%Vi,this%Wi)
+         call this%ens_out%add_scalar('pressure',this%fs%P)
+         if (this%use_sgs) call this%ens_out%add_scalar('visc_sgs',this%sgs%visc)
+         ! Output to ensight
+         if (this%ens_evt%occurs()) call this%ens_out%write_data(this%time%t)
+      end block create_ensight
       
       
       ! Create a monitor file
@@ -303,12 +258,12 @@ contains
          call this%fs%get_cfl(this%time%dt,this%time%cfl)
          call this%fs%get_max()
          ! Create simulation monitor
-         this%mfile=monitor(this%fs%cfg%amRoot,'pipe')
+         this%mfile=monitor(this%fs%cfg%amRoot,'simulation')
          call this%mfile%add_column(this%time%n,'Timestep number')
          call this%mfile%add_column(this%time%t,'Time')
          call this%mfile%add_column(this%time%dt,'Timestep size')
          call this%mfile%add_column(this%time%cfl,'Maximum CFL')
-         call this%mfile%add_column(this%meanU,'Bulk U')
+         call this%mfile%add_column(this%meanU,'Mean U')
          call this%mfile%add_column(this%bforce,'Body force')
          call this%mfile%add_column(this%fs%Umax,'Umax')
          call this%mfile%add_column(this%fs%Vmax,'Vmax')
@@ -319,26 +274,26 @@ contains
          call this%mfile%add_column(this%fs%psolv%rerr,'Pressure error')
          call this%mfile%write()
          ! Create CFL monitor
-         !this%cflfile=monitor(this%fs%cfg%amRoot,'pipe_cfl')
-         !call this%cflfile%add_column(this%time%n,'Timestep number')
-         !call this%cflfile%add_column(this%time%t,'Time')
-         !call this%cflfile%add_column(this%fs%CFLc_x,'Convective xCFL')
-         !call this%cflfile%add_column(this%fs%CFLc_y,'Convective yCFL')
-         !call this%cflfile%add_column(this%fs%CFLc_z,'Convective zCFL')
-         !call this%cflfile%add_column(this%fs%CFLv_x,'Viscous xCFL')
-         !call this%cflfile%add_column(this%fs%CFLv_y,'Viscous yCFL')
-         !call this%cflfile%add_column(this%fs%CFLv_z,'Viscous zCFL')
-         !call this%cflfile%write()
+         this%cflfile=monitor(this%fs%cfg%amRoot,'cfl')
+         call this%cflfile%add_column(this%time%n,'Timestep number')
+         call this%cflfile%add_column(this%time%t,'Time')
+         call this%cflfile%add_column(this%fs%CFLc_x,'Convective xCFL')
+         call this%cflfile%add_column(this%fs%CFLc_y,'Convective yCFL')
+         call this%cflfile%add_column(this%fs%CFLc_z,'Convective zCFL')
+         call this%cflfile%add_column(this%fs%CFLv_x,'Viscous xCFL')
+         call this%cflfile%add_column(this%fs%CFLv_y,'Viscous yCFL')
+         call this%cflfile%add_column(this%fs%CFLv_z,'Viscous zCFL')
+         call this%cflfile%write()
       end block create_monitor
       
-
+      
    end subroutine init
    
    
    !> Take one time step
    subroutine step(this)
       implicit none
-      class(periodicpipe), intent(inout) :: this
+      class(periodicchannel), intent(inout) :: this
       
       ! Increment time
       call this%fs%get_cfl(this%time%dt,this%time%cfl)
@@ -357,7 +312,6 @@ contains
             this%resU=this%fs%rho
             call this%fs%get_gradu(this%gradU)
             call this%sgs%get_visc(type=vreman,dt=this%time%dtold,rho=this%resU,gradu=this%gradU)
-            where (this%cfg%Gib.gt.0.0_WP) this%sgs%visc=0.0_WP
             this%fs%visc=this%visc+this%sgs%visc
          end block sgs_modeling
       end if
@@ -383,55 +337,34 @@ contains
             use mpi_f08,  only: MPI_SUM,MPI_ALLREDUCE,MPI_IN_PLACE
             use parallel, only: MPI_REAL_WP
             integer :: i,j,k,ierr
-            real(WP) :: Uvol,VFx
-            Uvol=0.0_WP; this%meanU=0.0_WP
+            real(WP) :: Uvol,meanUold
+            real(WP), parameter :: coeff=1.0e-2_WP
+            ! Compute MFRs at t^n and t^(n+1)
+            Uvol=0.0_WP; this%meanU=0.0_WP; meanUold=0.0_WP
             do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
                do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
                   do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-                     VFx=sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
-                     if (VFx.le.0.5_WP) cycle
-                     this%meanU=this%meanU+this%fs%cfg%dxm(i)*this%fs%cfg%dy(j)*this%fs%cfg%dz(k)*VFx*(2.0_WP*this%fs%U(i,j,k)-this%fs%Uold(i,j,k))
-                     Uvol      =Uvol      +this%fs%cfg%dxm(i)*this%fs%cfg%dy(j)*this%fs%cfg%dz(k)*VFx
+                     this%meanU=this%meanU+this%fs%cfg%dxm(i)*this%fs%cfg%dy(j)*this%fs%cfg%dz(k)*(2.0_WP*this%fs%U(i,j,k)-this%fs%Uold(i,j,k))
+                     meanUold  =meanUold  +this%fs%cfg%dxm(i)*this%fs%cfg%dy(j)*this%fs%cfg%dz(k)*this%fs%Uold(i,j,k)
+                     Uvol      =Uvol      +this%fs%cfg%dxm(i)*this%fs%cfg%dy(j)*this%fs%cfg%dz(k)
                   end do
                end do
             end do
             call MPI_ALLREDUCE(MPI_IN_PLACE,Uvol      ,1,MPI_REAL_WP,MPI_SUM,this%fs%cfg%comm,ierr)
             call MPI_ALLREDUCE(MPI_IN_PLACE,this%meanU,1,MPI_REAL_WP,MPI_SUM,this%fs%cfg%comm,ierr); this%meanU=this%meanU/Uvol
-            this%resU=this%resU+this%fs%rho*(this%Ubulk-this%meanU)
-            this%bforce=this%fs%rho*(this%Ubulk-this%meanU)/this%time%dt
+            call MPI_ALLREDUCE(MPI_IN_PLACE,meanUold  ,1,MPI_REAL_WP,MPI_SUM,this%fs%cfg%comm,ierr); meanUold  =meanUold/Uvol
+            ! Adjust bodyforce
+            this%bforce=this%bforce+coeff*(this%fs%rho*(1.0_WP-this%meanU)/this%time%dt-this%fs%rho*(this%meanU-meanUold)/this%time%dtold)
+            where (this%fs%umask.eq.0) this%resU=this%resU+this%time%dt*this%bforce
          end block forcing
          
-         ! Finish update
-         if (this%use_implicit) then
-            ! Form implicit residuals
-            call this%fs%solve_implicit(this%time%dt,this%resU,this%resV,this%resW)
-            ! Apply these residuals
-            this%fs%U=2.0_WP*this%fs%U-this%fs%Uold+this%resU
-            this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV
-            this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW
-         else
-            ! Apply these residuals
-            this%fs%U=2.0_WP*this%fs%U-this%fs%Uold+this%resU/this%fs%rho
-            this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV/this%fs%rho
-            this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW/this%fs%rho
-         end if
+         ! Form implicit residuals
+         call this%fs%solve_implicit(this%time%dt,this%resU,this%resV,this%resW)
          
-         ! Apply IB forcing to enforce BC at the pipe walls
-         ibforcing: block
-            integer :: i,j,k
-            do k=this%fs%cfg%kmin_,this%fs%cfg%kmax_
-               do j=this%fs%cfg%jmin_,this%fs%cfg%jmax_
-                  do i=this%fs%cfg%imin_,this%fs%cfg%imax_
-                     this%fs%U(i,j,k)=this%fs%U(i,j,k)*sum(this%fs%itpr_x(:,i,j,k)*this%cfg%VF(i-1:i,j,k))
-                     this%fs%V(i,j,k)=this%fs%V(i,j,k)*sum(this%fs%itpr_y(:,i,j,k)*this%cfg%VF(i,j-1:j,k))
-                     this%fs%W(i,j,k)=this%fs%W(i,j,k)*sum(this%fs%itpr_z(:,i,j,k)*this%cfg%VF(i,j,k-1:k))
-                  end do
-               end do
-            end do
-            call this%fs%cfg%sync(this%fs%U)
-            call this%fs%cfg%sync(this%fs%V)
-            call this%fs%cfg%sync(this%fs%W)
-         end block ibforcing
+         ! Apply these residuals
+         this%fs%U=2.0_WP*this%fs%U-this%fs%Uold+this%resU
+         this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV
+         this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW
          
          ! Apply other boundary conditions on the resulting fields
          call this%fs%apply_bcond(this%time%t,this%time%dt)
@@ -461,12 +394,12 @@ contains
       call this%fs%get_div()
       
       ! Output to ensight
-      !if (this%ens_evt%occurs()) call this%ens_out%write_data(this%time%t)
+      if (this%ens_evt%occurs()) call this%ens_out%write_data(this%time%t)
       
       ! Perform and output monitoring
       call this%fs%get_max()
       call this%mfile%write()
-      !call this%cflfile%write()
+      call this%cflfile%write()
       
       ! Finally, see if it's time to save restart files
       if (this%save_evt%occurs()) then
@@ -482,7 +415,7 @@ contains
             call this%df%push(name='V' ,var=this%fs%V   )
             call this%df%push(name='W' ,var=this%fs%W   )
             call this%df%push(name='P' ,var=this%fs%P   )
-            call this%df%write(fdata='restart/pipe_'//trim(adjustl(timestamp)))
+            call this%df%write(fdata='restart/channel_'//trim(adjustl(timestamp)))
          end block save_restart
       end if
       
@@ -492,12 +425,13 @@ contains
    !> Finalize simulation
    subroutine final(this)
       implicit none
-      class(periodicpipe), intent(inout) :: this
+      class(periodicchannel), intent(inout) :: this
       
       ! Deallocate work arrays
-      deallocate(this%resU,this%resV,this%resW,this%Ui,this%Vi,this%Wi,this%gradU)
+      deallocate(this%resU,this%resV,this%resW,this%Ui,this%Vi,this%Wi)
+      if (this%use_sgs) deallocate(this%gradU)
       
    end subroutine final
    
    
-end module periodicpipe_class
+end module periodicchannel_class
