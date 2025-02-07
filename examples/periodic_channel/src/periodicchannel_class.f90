@@ -76,20 +76,20 @@ contains
       initialize_config: block
          use sgrid_class, only: sgrid,cartesian
          integer :: i,j,k,nx,ny,nz
-         real(WP) :: Lx,Ly,Lz
+         real(WP) :: Lx,Ly,Lz,stretch
          real(WP), dimension(:), allocatable :: x,y,z
          type(sgrid) :: grid
          integer, dimension(3) :: partition
          ! Grid specification
          call param_read('Lx',Lx); call param_read('nx',nx); allocate(x(nx+1))
-         Ly=1.0_WP;                call param_read('ny',ny); allocate(y(ny+1))
+         Ly=1.0_WP;                call param_read('ny',ny); allocate(y(ny+1)); call param_read('Stretching',stretch)
          call param_read('Lz',Lz); call param_read('nz',nz); allocate(z(nz+1))
-         ! Create simple rectilinear grid
+         ! Create simple rectilinear grid in x and z, tanh-stretched grid in y
          do i=1,nx+1
             x(i)=real(i-1,WP)/real(nx,WP)*Lx
          end do
          do j=1,ny+1
-            y(j)=real(j-1,WP)/real(ny,WP)*Ly-0.5_WP*Ly
+            y(j)=0.5_WP*Ly*tanh(stretch*(2.0_WP*real(j-1,WP)/real(ny,WP)-1.0_WP))/tanh(stretch)
          end do
          do k=1,nz+1
             z(k)=real(k-1,WP)/real(nz,WP)*Lz-0.5_WP*Lz
@@ -104,12 +104,15 @@ contains
          this%cfg%VF=0.0_WP
          this%cfg%VF(this%cfg%imin_:this%cfg%imax_,this%cfg%jmin_:this%cfg%jmax_,this%cfg%kmin_:this%cfg%kmax_)=1.0_WP
          call this%cfg%sync(this%cfg%VF)
+         ! Output the grid
+         if (this%cfg%amRoot) call this%cfg%pgrid%write('channel.grid')
       end block initialize_config
       
       
       ! Initialize time tracker with 2 subiterations
       initialize_timetracker: block
          this%time=timetracker(amRoot=this%cfg%amRoot)
+         call param_read('Max time',this%time%tmax)
          call param_read('Max timestep size',this%time%dtmax)
          call param_read('Max cfl number',this%time%cflmax)
          this%time%dt=this%time%dtmax
@@ -203,6 +206,8 @@ contains
          call param_read('Restart output period',this%save_evt%tper)
          ! Read in the partition for I/O
          call param_read('I/O partition',iopartition)
+         ! Prepare a restart directory for storing files for restart
+         if (this%cfg%amRoot.and..not.isdir('restart')) call makedir('restart')
          ! Check if a restart file was provided
          call param_read('Restart from',filename,default='')
          this%restarted=.false.; if (len_trim(filename).gt.0) this%restarted=.true.
@@ -224,14 +229,12 @@ contains
             call this%df%pull(name='dt',val=this%time%dt)
             this%time%told=this%time%t-this%time%dt
             !this%time%dt=this%time%dtmax !< Force max timestep size anyway
+            ! Get bodyforce
+            call this%df%pull(name='bf',val=this%bforce)
          else
-            ! Prepare a new directory for storing files for restart
-            if (this%cfg%amRoot) then
-               if (.not.isdir('restart')) call makedir('restart')
-            end if
             ! If we are not restarting, we will still need a datafile for saving restart files
-            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=4)
-            this%df%valname=['dt','t ']; this%df%varname=['U','V','W','P']
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=3,nvar=4)
+            this%df%valname=['dt','t ','bf']; this%df%varname=['U','V','W','P']
          end if
       end block perform_restart
       
@@ -411,6 +414,7 @@ contains
             ! Populate df and write it
             call this%df%push(name='t' ,val=this%time%t )
             call this%df%push(name='dt',val=this%time%dt)
+            call this%df%push(name='bf',val=this%bforce )
             call this%df%push(name='U' ,var=this%fs%U   )
             call this%df%push(name='V' ,var=this%fs%V   )
             call this%df%push(name='W' ,var=this%fs%W   )
