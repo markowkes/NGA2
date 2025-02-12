@@ -11,9 +11,9 @@ nz : 256
 Stretching : 2.1
 
 # Time integration
-Max time : 100
-Max timestep size : 0.02
-Max cfl number :    10!0.8
+Max time : 400
+Max timestep size : 0.015
+Max cfl number :    0.8
 
 # Other options
 Use implicit solver : .true.
@@ -24,7 +24,7 @@ Ensight output period : 1
 
 # Restart handling
 Restart output period : 10
-Restart from : !restart/channel_Re5000
+Restart from : channel.Re4000
 
 # Flow parameters
-Reynolds number : 4000
+Reynolds number : 3000
