@@ -162,7 +162,8 @@ module tpns_class
       procedure :: interp_vel                             !< Calculate interpolated velocity
       procedure :: interp_velmid                          !< Calculate interpolated mid velocity
       procedure :: get_strainrate                         !< Calculate deviatoric part of strain rate tensor
-      procedure :: get_gradu                              !< Calculate velocity gradient tensor
+      procedure :: get_gradU                              !< Calculate velocity gradient tensor
+      procedure :: get_gradUmid                           !< Calculate mid velocity gradient tensor
       procedure :: get_ugradu                             !< Calculate (u.grad)u vector
       procedure :: get_vorticity                          !< Calculate vorticity vector
       procedure :: get_mfr                                !< Calculate outgoing MFR through each bcond
@@ -1684,25 +1685,25 @@ contains
 
 
    !> Calculate the velocity gradient tensor from U/V/W
-   !> Note that gradu(i,j)=duj/dxi
-   subroutine get_gradu(this,gradu)
+   !> Note that gradU(i,j)=duj/dxi
+   subroutine get_gradU(this,gradU)
       use messager, only: die
       implicit none
       class(tpns), intent(inout) :: this
-      real(WP), dimension(1:,1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: gradu  !< Needs to be (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), dimension(1:,1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: gradU  !< Needs to be (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k
       real(WP), dimension(:,:,:), allocatable :: dudy,dudz,dvdx,dvdz,dwdx,dwdy
       
-      ! Check gradu's first two dimensions
-	   if (size(gradu,dim=1).ne.3.or.size(gradu,dim=2).ne.3) call die('[tpns get_gradu] gradu should be of size (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
+      ! Check gradU's first two dimensions
+	   if (size(gradU,dim=1).ne.3.or.size(gradU,dim=2).ne.3) call die('[tpns get_gradU] gradU should be of size (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
       
       ! Compute dudx, dvdy, and dwdz first
 	   do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               gradu(1,1,i,j,k)=sum(this%grdu_x(:,i,j,k)*this%U(i:i+1,j,k))
-               gradu(2,2,i,j,k)=sum(this%grdv_y(:,i,j,k)*this%V(i,j:j+1,k))
-               gradu(3,3,i,j,k)=sum(this%grdw_z(:,i,j,k)*this%W(i,j,k:k+1))
+               gradU(1,1,i,j,k)=sum(this%grdu_x(:,i,j,k)*this%U(i:i+1,j,k))
+               gradU(2,2,i,j,k)=sum(this%grdv_y(:,i,j,k)*this%V(i,j:j+1,k))
+               gradU(3,3,i,j,k)=sum(this%grdw_z(:,i,j,k)*this%W(i,j,k:k+1))
             end do
          end do
       end do
@@ -1733,46 +1734,138 @@ contains
 	   do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               gradu(2,1,i,j,k)=0.25_WP*sum(dudy(i:i+1,j:j+1,k))
-               gradu(3,1,i,j,k)=0.25_WP*sum(dudz(i:i+1,j,k:k+1))
-               gradu(1,2,i,j,k)=0.25_WP*sum(dvdx(i:i+1,j:j+1,k))
-               gradu(3,2,i,j,k)=0.25_WP*sum(dvdz(i,j:j+1,k:k+1))
-               gradu(1,3,i,j,k)=0.25_WP*sum(dwdx(i:i+1,j,k:k+1))
-               gradu(2,3,i,j,k)=0.25_WP*sum(dwdy(i,j:j+1,k:k+1))
+               gradU(2,1,i,j,k)=0.25_WP*sum(dudy(i:i+1,j:j+1,k))
+               gradU(3,1,i,j,k)=0.25_WP*sum(dudz(i:i+1,j,k:k+1))
+               gradU(1,2,i,j,k)=0.25_WP*sum(dvdx(i:i+1,j:j+1,k))
+               gradU(3,2,i,j,k)=0.25_WP*sum(dvdz(i,j:j+1,k:k+1))
+               gradU(1,3,i,j,k)=0.25_WP*sum(dwdx(i:i+1,j,k:k+1))
+               gradU(2,3,i,j,k)=0.25_WP*sum(dwdy(i,j:j+1,k:k+1))
             end do
          end do
       end do
       
       ! Apply a Neumann condition in non-periodic directions
 	   if (.not.this%cfg%xper) then
-         if (this%cfg%iproc.eq.1)            gradu(:,:,this%cfg%imin-1,:,:)=gradu(:,:,this%cfg%imin,:,:)
-         if (this%cfg%iproc.eq.this%cfg%npx) gradu(:,:,this%cfg%imax+1,:,:)=gradu(:,:,this%cfg%imax,:,:)
+         if (this%cfg%iproc.eq.1)            gradU(:,:,this%cfg%imin-1,:,:)=gradU(:,:,this%cfg%imin,:,:)
+         if (this%cfg%iproc.eq.this%cfg%npx) gradU(:,:,this%cfg%imax+1,:,:)=gradU(:,:,this%cfg%imax,:,:)
       end if
       if (.not.this%cfg%yper) then
-         if (this%cfg%jproc.eq.1)            gradu(:,:,:,this%cfg%jmin-1,:)=gradu(:,:,:,this%cfg%jmin,:)
-         if (this%cfg%jproc.eq.this%cfg%npy) gradu(:,:,:,this%cfg%jmax+1,:)=gradu(:,:,:,this%cfg%jmax,:)
+         if (this%cfg%jproc.eq.1)            gradU(:,:,:,this%cfg%jmin-1,:)=gradU(:,:,:,this%cfg%jmin,:)
+         if (this%cfg%jproc.eq.this%cfg%npy) gradU(:,:,:,this%cfg%jmax+1,:)=gradU(:,:,:,this%cfg%jmax,:)
       end if
       if (.not.this%cfg%zper) then
-         if (this%cfg%kproc.eq.1)            gradu(:,:,:,:,this%cfg%kmin-1)=gradu(:,:,:,:,this%cfg%kmin)
-         if (this%cfg%kproc.eq.this%cfg%npz) gradu(:,:,:,:,this%cfg%kmax+1)=gradu(:,:,:,:,this%cfg%kmax)
+         if (this%cfg%kproc.eq.1)            gradU(:,:,:,:,this%cfg%kmin-1)=gradU(:,:,:,:,this%cfg%kmin)
+         if (this%cfg%kproc.eq.this%cfg%npz) gradU(:,:,:,:,this%cfg%kmax+1)=gradU(:,:,:,:,this%cfg%kmax)
       end if
       
       ! Ensure zero in walls
 	   do k=this%cfg%kmino_,this%cfg%kmaxo_
          do j=this%cfg%jmino_,this%cfg%jmaxo_
             do i=this%cfg%imino_,this%cfg%imaxo_
-               if (this%mask(i,j,k).eq.1) gradu(:,:,i,j,k)=0.0_WP
+               if (this%mask(i,j,k).eq.1) gradU(:,:,i,j,k)=0.0_WP
             end do
          end do
       end do
       
       ! Sync it
-	   call this%cfg%sync(gradu)
+	   call this%cfg%sync(gradU)
       
       ! Deallocate velocity gradient storage
 	   deallocate(dudy,dudz,dvdx,dvdz,dwdx,dwdy)
       
-   end subroutine get_gradu
+   end subroutine get_gradU
+   
+   
+   !> Calculate the velocity gradient tensor from Umid/Vmid/Wmid
+   !> Note that gradU(i,j)=duj/dxi
+   subroutine get_gradUmid(this,gradU)
+      use messager, only: die
+      implicit none
+      class(tpns), intent(inout) :: this
+      real(WP), dimension(1:,1:,this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(out) :: gradU  !< Needs to be (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      integer :: i,j,k
+      real(WP), dimension(:,:,:), allocatable :: dudy,dudz,dvdx,dvdz,dwdx,dwdy
+      
+      ! Check gradU's first two dimensions
+	   if (size(gradU,dim=1).ne.3.or.size(gradU,dim=2).ne.3) call die('[tpns get_gradUmid] gradU should be of size (1:3,1:3,imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)')
+      
+      ! Compute dudx, dvdy, and dwdz first
+	   do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               gradU(1,1,i,j,k)=sum(this%grdu_x(:,i,j,k)*this%Umid(i:i+1,j,k))
+               gradU(2,2,i,j,k)=sum(this%grdv_y(:,i,j,k)*this%Vmid(i,j:j+1,k))
+               gradU(3,3,i,j,k)=sum(this%grdw_z(:,i,j,k)*this%Wmid(i,j,k:k+1))
+            end do
+         end do
+      end do
+      
+      ! Allocate velocity gradient components
+	   allocate(dudy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dudz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dvdx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dvdz(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dwdx(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      allocate(dwdy(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
+      
+      ! Calculate components of the velocity gradient at their natural locations with an extra cell for interpolation
+	   do k=this%cfg%kmin_,this%cfg%kmax_+1
+         do j=this%cfg%jmin_,this%cfg%jmax_+1
+            do i=this%cfg%imin_,this%cfg%imax_+1
+               dudy(i,j,k)=sum(this%grdu_y(:,i,j,k)*this%Umid(i,j-1:j,k))
+               dudz(i,j,k)=sum(this%grdu_z(:,i,j,k)*this%Umid(i,j,k-1:k))
+               dvdx(i,j,k)=sum(this%grdv_x(:,i,j,k)*this%Vmid(i-1:i,j,k))
+               dvdz(i,j,k)=sum(this%grdv_z(:,i,j,k)*this%Vmid(i,j,k-1:k))
+               dwdx(i,j,k)=sum(this%grdw_x(:,i,j,k)*this%Wmid(i-1:i,j,k))
+               dwdy(i,j,k)=sum(this%grdw_y(:,i,j,k)*this%Wmid(i,j-1:j,k))
+            end do
+         end do
+      end do
+      
+      ! Interpolate off-diagonal components of the velocity gradient to the cell center
+	   do k=this%cfg%kmin_,this%cfg%kmax_
+         do j=this%cfg%jmin_,this%cfg%jmax_
+            do i=this%cfg%imin_,this%cfg%imax_
+               gradU(2,1,i,j,k)=0.25_WP*sum(dudy(i:i+1,j:j+1,k))
+               gradU(3,1,i,j,k)=0.25_WP*sum(dudz(i:i+1,j,k:k+1))
+               gradU(1,2,i,j,k)=0.25_WP*sum(dvdx(i:i+1,j:j+1,k))
+               gradU(3,2,i,j,k)=0.25_WP*sum(dvdz(i,j:j+1,k:k+1))
+               gradU(1,3,i,j,k)=0.25_WP*sum(dwdx(i:i+1,j,k:k+1))
+               gradU(2,3,i,j,k)=0.25_WP*sum(dwdy(i,j:j+1,k:k+1))
+            end do
+         end do
+      end do
+      
+      ! Apply a Neumann condition in non-periodic directions
+	   if (.not.this%cfg%xper) then
+         if (this%cfg%iproc.eq.1)            gradU(:,:,this%cfg%imin-1,:,:)=gradU(:,:,this%cfg%imin,:,:)
+         if (this%cfg%iproc.eq.this%cfg%npx) gradU(:,:,this%cfg%imax+1,:,:)=gradU(:,:,this%cfg%imax,:,:)
+      end if
+      if (.not.this%cfg%yper) then
+         if (this%cfg%jproc.eq.1)            gradU(:,:,:,this%cfg%jmin-1,:)=gradU(:,:,:,this%cfg%jmin,:)
+         if (this%cfg%jproc.eq.this%cfg%npy) gradU(:,:,:,this%cfg%jmax+1,:)=gradU(:,:,:,this%cfg%jmax,:)
+      end if
+      if (.not.this%cfg%zper) then
+         if (this%cfg%kproc.eq.1)            gradU(:,:,:,:,this%cfg%kmin-1)=gradU(:,:,:,:,this%cfg%kmin)
+         if (this%cfg%kproc.eq.this%cfg%npz) gradU(:,:,:,:,this%cfg%kmax+1)=gradU(:,:,:,:,this%cfg%kmax)
+      end if
+      
+      ! Ensure zero in walls
+	   do k=this%cfg%kmino_,this%cfg%kmaxo_
+         do j=this%cfg%jmino_,this%cfg%jmaxo_
+            do i=this%cfg%imino_,this%cfg%imaxo_
+               if (this%mask(i,j,k).eq.1) gradU(:,:,i,j,k)=0.0_WP
+            end do
+         end do
+      end do
+      
+      ! Sync it
+	   call this%cfg%sync(gradU)
+      
+      ! Deallocate velocity gradient storage
+	   deallocate(dudy,dudz,dvdx,dvdz,dwdx,dwdy)
+      
+   end subroutine get_gradUmid
    
    
    !> Calculate vorticity vector
@@ -1889,9 +1982,9 @@ contains
       do k=this%cfg%kmin_,this%cfg%kmax_
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
-               my_CFLc_x=max(my_CFLc_x,abs(this%U(i,j,k))*this%cfg%dxmi(i))
-               my_CFLc_y=max(my_CFLc_y,abs(this%V(i,j,k))*this%cfg%dymi(j))
-               my_CFLc_z=max(my_CFLc_z,abs(this%W(i,j,k))*this%cfg%dzmi(k))
+               my_CFLc_x=max(my_CFLc_x,max(abs(this%U(i,j,k)),abs(this%Umid(i,j,k)))*this%cfg%dxmi(i))
+               my_CFLc_y=max(my_CFLc_y,max(abs(this%V(i,j,k)),abs(this%Vmid(i,j,k)))*this%cfg%dymi(j))
+               my_CFLc_z=max(my_CFLc_z,max(abs(this%W(i,j,k)),abs(this%Wmid(i,j,k)))*this%cfg%dzmi(k))
                my_CFLv_x=max(my_CFLv_x,4.0_WP*max_nu*this%cfg%dxi(i)**2)
                my_CFLv_y=max(my_CFLv_y,4.0_WP*max_nu*this%cfg%dyi(j)**2)
                my_CFLv_z=max(my_CFLv_z,4.0_WP*max_nu*this%cfg%dzi(k)**2)

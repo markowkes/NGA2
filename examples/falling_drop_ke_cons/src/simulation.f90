@@ -6,6 +6,7 @@ module simulation
    use ddadi_class,       only: ddadi
    use tpns_class,        only: tpns
    use vfs_class,         only: vfs
+   use sgsmodel_class,    only: sgsmodel
    use timetracker_class, only: timetracker
    use ensight_class,     only: ensight
    use surfmesh_class,    only: surfmesh
@@ -13,27 +14,32 @@ module simulation
    use monitor_class,     only: monitor
    implicit none
    private
-   
-   !> Get a couple linear solvers, a two-phase flow solver and volume fraction solver and corresponding time tracker
-   type(hypre_str),   public :: ps
-   type(ddadi),       public :: vs
-   type(tpns),        public :: fs
-   type(vfs),         public :: vf
-   type(timetracker), public :: time
-   
-   !> Ensight postprocessing
-   type(surfmesh) :: smesh
-   type(ensight)  :: ens_out
-   type(event)    :: ens_evt
-   
-   !> Simulation monitor file
-   type(monitor) :: mfile,cflfile
-   
    public :: simulation_init,simulation_run,simulation_final
    
+   !> Flow solver objects
+   type(hypre_str),   public :: ps     !< Structured Hypre linear solver for pressure
+   type(ddadi),       public :: vs     !< DDADI solver for velocity
+   type(tpns),        public :: fs     !< Two-phase flow solver
+   type(vfs),         public :: vf     !< Volume fraction solver
+   type(timetracker), public :: time   !< Time info
+   
+   !> SGS modeling
+   logical        :: use_sgs   !< Is an LES model used?
+   type(sgsmodel) :: sgs       !< SGS model for eddy viscosity
+   
+   !> Ensight postprocessing
+   type(surfmesh) :: smesh     !< Surface mesh for interface
+   type(ensight)  :: ens_out   !< Ensight output for flow variables
+   type(event)    :: ens_evt   !< Event trigger for Ensight output
+   
+   !> Monitoring files
+   type(monitor) :: mfile      !< General simulation monitoring
+   type(monitor) :: cflfile    !< CFL monitoring
+   
    !> Private work arrays
-   real(WP), dimension(:,:,:), allocatable :: resU,resV,resW
-   real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi
+   real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
+   real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
+   real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities
    
 contains
    
@@ -64,7 +70,7 @@ contains
          call param_read('Max cfl number',time%cflmax)
          call param_read('Max time',time%tmax)
          time%dt=time%dtmax
-         time%itmax=2
+         call param_read('Subiterations',time%itmax,default=2)
       end block initialize_timetracker
       
       
@@ -148,7 +154,7 @@ contains
          fs%gravity=[0.0_WP,-1.0_WP,0.0_WP]
          ! Configure pressure solver
          ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg2,nst=7)
-         ps%maxlevel=10
+         ps%maxlevel=12
          call param_read('Pressure iteration',ps%maxit)
          call param_read('Pressure tolerance',ps%rcvg)
          ! Configure implicit velocity solver
@@ -166,6 +172,16 @@ contains
          call fs%interp_velmid(Ui,Vi,Wi)
          call fs%get_div()
       end block initialize_velocity
+      
+      
+      ! Create an LES model
+      create_sgs: block
+         call param_read('Use SGS model',use_sgs)
+         if (use_sgs) then
+            allocate(gradU(1:3,1:3,cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+            sgs=sgsmodel(cfg=fs%cfg,umask=fs%umask,vmask=fs%vmask,wmask=fs%wmask)
+         end if
+      end block create_sgs
       
       
       ! Create surfmesh object for interface polygon output
@@ -250,7 +266,7 @@ contains
    
    !> Perform an NGA2 simulation
    subroutine simulation_run
-      use tpns_class, only: harmonic_visc,arithmetic_visc
+      use tpns_class, only: arithmetic_visc
       implicit none
       
       ! Perform time integration
@@ -289,6 +305,27 @@ contains
             
             ! Prepare new staggered viscosity (at n+1)
             call fs%get_viscosity(vf=vf,strat=arithmetic_visc)
+            
+            ! Turbulence modeling
+            if (use_sgs) then
+               sgs_modeling: block
+                  use sgsmodel_class, only: vreman
+                  integer :: i,j,k
+                  resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF)
+                  call fs%get_gradUmid(gradU)
+                  call sgs%get_visc(type=vreman,dt=time%dt,rho=resU,gradu=gradU)
+                  do k=fs%cfg%kmino_+1,fs%cfg%kmaxo_
+                     do j=fs%cfg%jmino_+1,fs%cfg%jmaxo_
+                        do i=fs%cfg%imino_+1,fs%cfg%imaxo_
+                           fs%visc(i,j,k)   =fs%visc(i,j,k)   +sgs%visc(i,j,k)
+                           fs%visc_xy(i,j,k)=fs%visc_xy(i,j,k)+sum(fs%itp_xy(:,:,i,j,k)*sgs%visc(i-1:i,j-1:j,k))
+                           fs%visc_yz(i,j,k)=fs%visc_yz(i,j,k)+sum(fs%itp_yz(:,:,i,j,k)*sgs%visc(i,j-1:j,k-1:k))
+                           fs%visc_zx(i,j,k)=fs%visc_zx(i,j,k)+sum(fs%itp_xz(:,:,i,j,k)*sgs%visc(i-1:i,j,k-1:k))
+                        end do
+                     end do
+                  end do
+               end block sgs_modeling
+            end if
             
             ! Momentum equation ===============================================
             ! Explicit calculation of drho*u/dt from NS
@@ -379,6 +416,7 @@ contains
       
       ! Deallocate work arrays
       deallocate(resU,resV,resW,Ui,Vi,Wi)
+      if (use_sgs) deallocate(gradU)
       
    end subroutine simulation_final
    

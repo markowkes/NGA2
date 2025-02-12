@@ -19,6 +19,9 @@ Bond number :     100
 Density ratio :   1000
 Viscosity ratio : 50
 
+# SGS modeling
+Use SGS model : .true.
+
 # Time integration
 Max timestep size : 1e-2
 Max cfl number :    0.9
