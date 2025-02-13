@@ -51,6 +51,9 @@ module tpns_class
       ! This is the name of the solver
       character(len=str_medium) :: name='UNNAMED_TPNS'    !< Solver name (default=UNNAMED_TPNS)
       
+      ! Theta parameter for stabilization
+      real(WP) :: theta=0.5_WP                            !< Choosing theta=0.5 leads to Crank-Nicolson, theta>0.5 increases stability
+
       ! Constant property fluids
       real(WP) :: contact_angle                           !< This is our static contact angle
       real(WP) :: sigma                                   !< This is our constant surface tension coefficient
@@ -1255,9 +1258,9 @@ contains
                ! Tranverse the stencil and recompute Laplacian
                do s1=0,1
                   do s2=-1,0
-                     this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)=this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)+this%divp_x(s1,i,j,k)*this%divu_x(s2,i+s1,j,k)/((this%sRHOX(i+s1,j,k)+this%sRHOXold(i+s1,j,k))*this%sRHOX(i+s1,j,k))
-                     this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)=this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)+this%divp_y(s1,i,j,k)*this%divv_y(s2,i,j+s1,k)/((this%sRHOY(i,j+s1,k)+this%sRHOYold(i,j+s1,k))*this%sRHOY(i,j+s1,k))
-                     this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)=this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)+this%divp_z(s1,i,j,k)*this%divw_z(s2,i,j,k+s1)/((this%sRHOZ(i,j,k+s1)+this%sRHOZold(i,j,k+s1))*this%sRHOZ(i,j,k+s1))
+                     this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)=this%psolv%opr(this%psolv%stmap(s1+s2,0,0),i,j,k)+this%divp_x(s1,i,j,k)*this%divu_x(s2,i+s1,j,k)/((this%sRHOX(i+s1,j,k)+this%sRHOXold(i+s1,j,k)*(1.0_WP-this%theta)/this%theta)*this%sRHOX(i+s1,j,k))
+                     this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)=this%psolv%opr(this%psolv%stmap(0,s1+s2,0),i,j,k)+this%divp_y(s1,i,j,k)*this%divv_y(s2,i,j+s1,k)/((this%sRHOY(i,j+s1,k)+this%sRHOYold(i,j+s1,k)*(1.0_WP-this%theta)/this%theta)*this%sRHOY(i,j+s1,k))
+                     this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)=this%psolv%opr(this%psolv%stmap(0,0,s1+s2),i,j,k)+this%divp_z(s1,i,j,k)*this%divw_z(s2,i,j,k+s1)/((this%sRHOZ(i,j,k+s1)+this%sRHOZold(i,j,k+s1)*(1.0_WP-this%theta)/this%theta)*this%sRHOZ(i,j,k+s1))
                   end do
                end do
                ! Scale Laplacian by cell volume
@@ -1371,9 +1374,9 @@ contains
          do j=this%cfg%jmin_,this%cfg%jmax_
             do i=this%cfg%imin_,this%cfg%imax_
                do s1=0,1
-                  div(i,j,k)=div(i,j,k)+dt*this%divp_x(s1,i,j,k)*this%dPjx(i+s1,j,k)/((this%sRHOX(i+s1,j,k)+this%sRHOXold(i+s1,j,k))*this%sRHOX(i+s1,j,k))
-                  div(i,j,k)=div(i,j,k)+dt*this%divp_y(s1,i,j,k)*this%dPjy(i,j+s1,k)/((this%sRHOY(i,j+s1,k)+this%sRHOYold(i,j+s1,k))*this%sRHOY(i,j+s1,k))
-                  div(i,j,k)=div(i,j,k)+dt*this%divp_z(s1,i,j,k)*this%dPjz(i,j,k+s1)/((this%sRHOZ(i,j,k+s1)+this%sRHOZold(i,j,k+s1))*this%sRHOZ(i,j,k+s1))
+                  div(i,j,k)=div(i,j,k)+dt*this%divp_x(s1,i,j,k)*this%dPjx(i+s1,j,k)/((this%sRHOX(i+s1,j,k)+this%sRHOXold(i+s1,j,k)*(1.0_WP-this%theta)/this%theta)*this%sRHOX(i+s1,j,k))
+                  div(i,j,k)=div(i,j,k)+dt*this%divp_y(s1,i,j,k)*this%dPjy(i,j+s1,k)/((this%sRHOY(i,j+s1,k)+this%sRHOYold(i,j+s1,k)*(1.0_WP-this%theta)/this%theta)*this%sRHOY(i,j+s1,k))
+                  div(i,j,k)=div(i,j,k)+dt*this%divp_z(s1,i,j,k)*this%dPjz(i,j,k+s1)/((this%sRHOZ(i,j,k+s1)+this%sRHOZold(i,j,k+s1)*(1.0_WP-this%theta)/this%theta)*this%sRHOZ(i,j,k+s1))
                end do
             end do
          end do
@@ -2263,13 +2266,13 @@ contains
                &                                                         this%divu_y(+1,i,j,k)*this%itpu_y(-1,i,j+1,k)*rhoVp+&
                &                                                         this%divu_y( 0,i,j,k)*this%itpu_y( 0,i,j  ,k)*rhoVm+&
                &                                                         this%divu_z(+1,i,j,k)*this%itpu_z(-1,i,j,k+1)*rhoWp+&
-               &                                                         this%divu_z( 0,i,j,k)*this%itpu_z( 0,i,j,k  )*rhoWm)*this%sRHOX(i,j,k)  /(this%sRHOX(i,j,k)  +this%sRHOXold(i,j,k)  )
-               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*(this%divu_x( 0,i,j,k)*this%itpu_x(+1,i  ,j,k)*rhoUp)*this%sRHOX(i+1,j,k)/(this%sRHOX(i+1,j,k)+this%sRHOXold(i+1,j,k))
-               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*(this%divu_x(-1,i,j,k)*this%itpu_x( 0,i-1,j,k)*rhoUm)*this%sRHOX(i-1,j,k)/(this%sRHOX(i-1,j,k)+this%sRHOXold(i-1,j,k))
-               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*(this%divu_y(+1,i,j,k)*this%itpu_y( 0,i,j+1,k)*rhoVp)*this%sRHOX(i,j+1,k)/(this%sRHOX(i,j+1,k)+this%sRHOXold(i,j+1,k))
-               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*(this%divu_y( 0,i,j,k)*this%itpu_y(-1,i,j  ,k)*rhoVm)*this%sRHOX(i,j-1,k)/(this%sRHOX(i,j-1,k)+this%sRHOXold(i,j-1,k))
-               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*(this%divu_z(+1,i,j,k)*this%itpu_z( 0,i,j,k+1)*rhoWp)*this%sRHOX(i,j+1,k)/(this%sRHOX(i,j,k+1)+this%sRHOXold(i,j,k+1))
-               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*(this%divu_z( 0,i,j,k)*this%itpu_z(-1,i,j,k  )*rhoWm)*this%sRHOX(i,j-1,k)/(this%sRHOX(i,j,k-1)+this%sRHOXold(i,j,k-1))
+               &                                                         this%divu_z( 0,i,j,k)*this%itpu_z( 0,i,j,k  )*rhoWm)*this%sRHOX(i,j,k)  /(this%sRHOX(i,j,k)  +this%sRHOXold(i,j,k)  *(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*(this%divu_x( 0,i,j,k)*this%itpu_x(+1,i  ,j,k)*rhoUp)*this%sRHOX(i+1,j,k)/(this%sRHOX(i+1,j,k)+this%sRHOXold(i+1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*(this%divu_x(-1,i,j,k)*this%itpu_x( 0,i-1,j,k)*rhoUm)*this%sRHOX(i-1,j,k)/(this%sRHOX(i-1,j,k)+this%sRHOXold(i-1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*(this%divu_y(+1,i,j,k)*this%itpu_y( 0,i,j+1,k)*rhoVp)*this%sRHOX(i,j+1,k)/(this%sRHOX(i,j+1,k)+this%sRHOXold(i,j+1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*(this%divu_y( 0,i,j,k)*this%itpu_y(-1,i,j  ,k)*rhoVm)*this%sRHOX(i,j-1,k)/(this%sRHOX(i,j-1,k)+this%sRHOXold(i,j-1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*(this%divu_z(+1,i,j,k)*this%itpu_z( 0,i,j,k+1)*rhoWp)*this%sRHOX(i,j+1,k)/(this%sRHOX(i,j,k+1)+this%sRHOXold(i,j,k+1)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*(this%divu_z( 0,i,j,k)*this%itpu_z(-1,i,j,k  )*rhoWm)*this%sRHOX(i,j-1,k)/(this%sRHOX(i,j,k-1)+this%sRHOXold(i,j,k-1)*(1.0_WP-this%theta)/this%theta)
             end do
          end do
       end do
@@ -2281,13 +2284,13 @@ contains
                &                                                         this%divu_y(+1,i,j,k)*       this%visc_xy(i,j+1,k)*this%grdu_y(-1,i,j+1,k)+&
                &                                                         this%divu_y( 0,i,j,k)*       this%visc_xy(i,j  ,k)*this%grdu_y( 0,i,j  ,k)+&
                &                                                         this%divu_z(+1,i,j,k)*       this%visc_zx(i,j,k+1)*this%grdu_z(-1,i,j,k+1)+&
-               &                                                         this%divu_z( 0,i,j,k)*       this%visc_zx(i,j,k  )*this%grdu_z( 0,i,j,k  ))*this%sRHOX(i,j,k)  /(this%sRHOX(i,j,k)  +this%sRHOXold(i,j,k)  )
-               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)-dt*(this%divu_x( 0,i,j,k)*2.0_WP*this%visc   (i  ,j,k)*this%grdu_x(+1,i  ,j,k))*this%sRHOX(i+1,j,k)/(this%sRHOX(i+1,j,k)+this%sRHOXold(i+1,j,k))
-               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)-dt*(this%divu_x(-1,i,j,k)*2.0_WP*this%visc   (i-1,j,k)*this%grdu_x( 0,i-1,j,k))*this%sRHOX(i-1,j,k)/(this%sRHOX(i-1,j,k)+this%sRHOXold(i-1,j,k))
-               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)-dt*(this%divu_y(+1,i,j,k)*       this%visc_xy(i,j+1,k)*this%grdu_y( 0,i,j+1,k))*this%sRHOX(i,j+1,k)/(this%sRHOX(i,j+1,k)+this%sRHOXold(i,j+1,k))
-               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)-dt*(this%divu_y( 0,i,j,k)*       this%visc_xy(i,j  ,k)*this%grdu_y(-1,i,j  ,k))*this%sRHOX(i,j-1,k)/(this%sRHOX(i,j-1,k)+this%sRHOXold(i,j-1,k))
-               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)-dt*(this%divu_z(+1,i,j,k)*       this%visc_zx(i,j,k+1)*this%grdu_z( 0,i,j,k+1))*this%sRHOX(i,j+1,k)/(this%sRHOX(i,j,k+1)+this%sRHOXold(i,j,k+1))
-               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)-dt*(this%divu_z( 0,i,j,k)*       this%visc_zx(i,j,k  )*this%grdu_z(-1,i,j,k  ))*this%sRHOX(i,j-1,k)/(this%sRHOX(i,j,k-1)+this%sRHOXold(i,j,k-1))
+               &                                                         this%divu_z( 0,i,j,k)*       this%visc_zx(i,j,k  )*this%grdu_z( 0,i,j,k  ))*this%sRHOX(i,j,k)  /(this%sRHOX(i,j,k)  +this%sRHOXold(i,j,k)  *(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)-dt*(this%divu_x( 0,i,j,k)*2.0_WP*this%visc   (i  ,j,k)*this%grdu_x(+1,i  ,j,k))*this%sRHOX(i+1,j,k)/(this%sRHOX(i+1,j,k)+this%sRHOXold(i+1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)-dt*(this%divu_x(-1,i,j,k)*2.0_WP*this%visc   (i-1,j,k)*this%grdu_x( 0,i-1,j,k))*this%sRHOX(i-1,j,k)/(this%sRHOX(i-1,j,k)+this%sRHOXold(i-1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)-dt*(this%divu_y(+1,i,j,k)*       this%visc_xy(i,j+1,k)*this%grdu_y( 0,i,j+1,k))*this%sRHOX(i,j+1,k)/(this%sRHOX(i,j+1,k)+this%sRHOXold(i,j+1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)-dt*(this%divu_y( 0,i,j,k)*       this%visc_xy(i,j  ,k)*this%grdu_y(-1,i,j  ,k))*this%sRHOX(i,j-1,k)/(this%sRHOX(i,j-1,k)+this%sRHOXold(i,j-1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)-dt*(this%divu_z(+1,i,j,k)*       this%visc_zx(i,j,k+1)*this%grdu_z( 0,i,j,k+1))*this%sRHOX(i,j+1,k)/(this%sRHOX(i,j,k+1)+this%sRHOXold(i,j,k+1)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)-dt*(this%divu_z( 0,i,j,k)*       this%visc_zx(i,j,k  )*this%grdu_z(-1,i,j,k  ))*this%sRHOX(i,j-1,k)/(this%sRHOX(i,j,k-1)+this%sRHOXold(i,j,k-1)*(1.0_WP-this%theta)/this%theta)
             end do
          end do
       end do
@@ -2313,13 +2316,13 @@ contains
                &                                                         this%divv_y( 0,i,j,k)*this%itpv_y( 0,i,j  ,k)*rhoVp+&
                &                                                         this%divv_y(-1,i,j,k)*this%itpv_y(+1,i,j-1,k)*rhoVm+&
                &                                                         this%divv_z(+1,i,j,k)*this%itpv_z(-1,i,j,k+1)*rhoWp+&
-               &                                                         this%divv_z( 0,i,j,k)*this%itpv_z( 0,i,j,k  )*rhoWm)*this%sRHOY(i,j,k)  /(this%sRHOY(i,j,k)  +this%sRHOYold(i,j,k)  )
-               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*(this%divv_x(+1,i,j,k)*this%itpv_x( 0,i+1,j,k)*rhoUp)*this%sRHOY(i+1,j,k)/(this%sRHOY(i+1,j,k)+this%sRHOYold(i+1,j,k))
-               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*(this%divv_x( 0,i,j,k)*this%itpv_x(-1,i  ,j,k)*rhoUm)*this%sRHOY(i-1,j,k)/(this%sRHOY(i-1,j,k)+this%sRHOYold(i-1,j,k))
-               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*(this%divv_y( 0,i,j,k)*this%itpv_y(+1,i,j  ,k)*rhoVp)*this%sRHOY(i,j+1,k)/(this%sRHOY(i,j+1,k)+this%sRHOYold(i,j+1,k))
-               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*(this%divv_y(-1,i,j,k)*this%itpv_y( 0,i,j-1,k)*rhoVm)*this%sRHOY(i,j-1,k)/(this%sRHOY(i,j-1,k)+this%sRHOYold(i,j-1,k))
-               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*(this%divv_z(+1,i,j,k)*this%itpv_z( 0,i,j,k+1)*rhoWp)*this%sRHOY(i,j+1,k)/(this%sRHOY(i,j,k+1)+this%sRHOYold(i,j,k+1))
-               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*(this%divv_z( 0,i,j,k)*this%itpv_z(-1,i,j,k  )*rhoWm)*this%sRHOY(i,j-1,k)/(this%sRHOY(i,j,k-1)+this%sRHOYold(i,j,k-1))
+               &                                                         this%divv_z( 0,i,j,k)*this%itpv_z( 0,i,j,k  )*rhoWm)*this%sRHOY(i,j,k)  /(this%sRHOY(i,j,k)  +this%sRHOYold(i,j,k)  *(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*(this%divv_x(+1,i,j,k)*this%itpv_x( 0,i+1,j,k)*rhoUp)*this%sRHOY(i+1,j,k)/(this%sRHOY(i+1,j,k)+this%sRHOYold(i+1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*(this%divv_x( 0,i,j,k)*this%itpv_x(-1,i  ,j,k)*rhoUm)*this%sRHOY(i-1,j,k)/(this%sRHOY(i-1,j,k)+this%sRHOYold(i-1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*(this%divv_y( 0,i,j,k)*this%itpv_y(+1,i,j  ,k)*rhoVp)*this%sRHOY(i,j+1,k)/(this%sRHOY(i,j+1,k)+this%sRHOYold(i,j+1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*(this%divv_y(-1,i,j,k)*this%itpv_y( 0,i,j-1,k)*rhoVm)*this%sRHOY(i,j-1,k)/(this%sRHOY(i,j-1,k)+this%sRHOYold(i,j-1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*(this%divv_z(+1,i,j,k)*this%itpv_z( 0,i,j,k+1)*rhoWp)*this%sRHOY(i,j+1,k)/(this%sRHOY(i,j,k+1)+this%sRHOYold(i,j,k+1)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*(this%divv_z( 0,i,j,k)*this%itpv_z(-1,i,j,k  )*rhoWm)*this%sRHOY(i,j-1,k)/(this%sRHOY(i,j,k-1)+this%sRHOYold(i,j,k-1)*(1.0_WP-this%theta)/this%theta)
             end do
          end do
       end do
@@ -2331,13 +2334,13 @@ contains
                &                                                         this%divv_y( 0,i,j,k)*2.0_WP*this%visc   (i,j  ,k)*this%grdv_y( 0,i,j  ,k)+&
                &                                                         this%divv_y(-1,i,j,k)*2.0_WP*this%visc   (i,j-1,k)*this%grdv_y(+1,i,j-1,k)+&
                &                                                         this%divv_z(+1,i,j,k)*       this%visc_yz(i,j,k+1)*this%grdv_z(-1,i,j,k+1)+&
-               &                                                         this%divv_z( 0,i,j,k)*       this%visc_yz(i,j,k  )*this%grdv_z( 0,i,j,k  ))*this%sRHOY(i,j,k)  /(this%sRHOY(i,j,k)  +this%sRHOYold(i,j,k)  )
-               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)-dt*(this%divv_x(+1,i,j,k)*       this%visc_xy(i+1,j,k)*this%grdv_x( 0,i+1,j,k))*this%sRHOY(i+1,j,k)/(this%sRHOY(i+1,j,k)+this%sRHOYold(i+1,j,k))
-               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)-dt*(this%divv_x( 0,i,j,k)*       this%visc_xy(i  ,j,k)*this%grdv_x(-1,i  ,j,k))*this%sRHOY(i-1,j,k)/(this%sRHOY(i-1,j,k)+this%sRHOYold(i-1,j,k))
-               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)-dt*(this%divv_y( 0,i,j,k)*2.0_WP*this%visc   (i,j  ,k)*this%grdv_y(+1,i,j  ,k))*this%sRHOY(i,j+1,k)/(this%sRHOY(i,j+1,k)+this%sRHOYold(i,j+1,k))
-               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)-dt*(this%divv_y(-1,i,j,k)*2.0_WP*this%visc   (i,j-1,k)*this%grdv_y( 0,i,j-1,k))*this%sRHOY(i,j-1,k)/(this%sRHOY(i,j-1,k)+this%sRHOYold(i,j-1,k))
-               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)-dt*(this%divv_z(+1,i,j,k)*       this%visc_yz(i,j,k+1)*this%grdv_z( 0,i,j,k+1))*this%sRHOY(i,j+1,k)/(this%sRHOY(i,j,k+1)+this%sRHOYold(i,j,k+1))
-               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)-dt*(this%divv_z( 0,i,j,k)*       this%visc_yz(i,j,k  )*this%grdv_z(-1,i,j,k  ))*this%sRHOY(i,j-1,k)/(this%sRHOY(i,j,k-1)+this%sRHOYold(i,j,k-1))
+               &                                                         this%divv_z( 0,i,j,k)*       this%visc_yz(i,j,k  )*this%grdv_z( 0,i,j,k  ))*this%sRHOY(i,j,k)  /(this%sRHOY(i,j,k)  +this%sRHOYold(i,j,k)  *(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)-dt*(this%divv_x(+1,i,j,k)*       this%visc_xy(i+1,j,k)*this%grdv_x( 0,i+1,j,k))*this%sRHOY(i+1,j,k)/(this%sRHOY(i+1,j,k)+this%sRHOYold(i+1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)-dt*(this%divv_x( 0,i,j,k)*       this%visc_xy(i  ,j,k)*this%grdv_x(-1,i  ,j,k))*this%sRHOY(i-1,j,k)/(this%sRHOY(i-1,j,k)+this%sRHOYold(i-1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)-dt*(this%divv_y( 0,i,j,k)*2.0_WP*this%visc   (i,j  ,k)*this%grdv_y(+1,i,j  ,k))*this%sRHOY(i,j+1,k)/(this%sRHOY(i,j+1,k)+this%sRHOYold(i,j+1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)-dt*(this%divv_y(-1,i,j,k)*2.0_WP*this%visc   (i,j-1,k)*this%grdv_y( 0,i,j-1,k))*this%sRHOY(i,j-1,k)/(this%sRHOY(i,j-1,k)+this%sRHOYold(i,j-1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)-dt*(this%divv_z(+1,i,j,k)*       this%visc_yz(i,j,k+1)*this%grdv_z( 0,i,j,k+1))*this%sRHOY(i,j+1,k)/(this%sRHOY(i,j,k+1)+this%sRHOYold(i,j,k+1)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)-dt*(this%divv_z( 0,i,j,k)*       this%visc_yz(i,j,k  )*this%grdv_z(-1,i,j,k  ))*this%sRHOY(i,j-1,k)/(this%sRHOY(i,j,k-1)+this%sRHOYold(i,j,k-1)*(1.0_WP-this%theta)/this%theta)
             end do
          end do
       end do
@@ -2363,13 +2366,13 @@ contains
                &                                                         this%divw_y(+1,i,j,k)*this%itpw_y(-1,i,j+1,k)*rhoVp+&
                &                                                         this%divw_y( 0,i,j,k)*this%itpw_y( 0,i,j  ,k)*rhoVm+&
                &                                                         this%divw_z( 0,i,j,k)*this%itpw_z( 0,i,j,k  )*rhoWp+&
-               &                                                         this%divw_z(-1,i,j,k)*this%itpw_z(+1,i,j,k-1)*rhoWm)*this%sRHOZ(i,j,k)  /(this%sRHOZ(i,j,k)  +this%sRHOZold(i,j,k)  )
-               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*(this%divw_x(+1,i,j,k)*this%itpw_x( 0,i+1,j,k)*rhoUp)*this%sRHOZ(i+1,j,k)/(this%sRHOZ(i+1,j,k)+this%sRHOZold(i+1,j,k))
-               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*(this%divw_x( 0,i,j,k)*this%itpw_x(-1,i  ,j,k)*rhoUm)*this%sRHOZ(i-1,j,k)/(this%sRHOZ(i-1,j,k)+this%sRHOZold(i-1,j,k))
-               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*(this%divw_y(+1,i,j,k)*this%itpw_y( 0,i,j+1,k)*rhoVp)*this%sRHOZ(i,j+1,k)/(this%sRHOZ(i,j+1,k)+this%sRHOZold(i,j+1,k))
-               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*(this%divw_y( 0,i,j,k)*this%itpw_y(-1,i,j  ,k)*rhoVm)*this%sRHOZ(i,j-1,k)/(this%sRHOZ(i,j-1,k)+this%sRHOZold(i,j-1,k))
-               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*(this%divw_z( 0,i,j,k)*this%itpw_z(+1,i,j,k  )*rhoWp)*this%sRHOZ(i,j+1,k)/(this%sRHOZ(i,j,k+1)+this%sRHOZold(i,j,k+1))
-               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*(this%divw_z(-1,i,j,k)*this%itpw_z( 0,i,j,k-1)*rhoWm)*this%sRHOZ(i,j-1,k)/(this%sRHOZ(i,j,k-1)+this%sRHOZold(i,j,k-1))
+               &                                                         this%divw_z(-1,i,j,k)*this%itpw_z(+1,i,j,k-1)*rhoWm)*this%sRHOZ(i,j,k)  /(this%sRHOZ(i,j,k)  +this%sRHOZold(i,j,k)  *(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)+dt*(this%divw_x(+1,i,j,k)*this%itpw_x( 0,i+1,j,k)*rhoUp)*this%sRHOZ(i+1,j,k)/(this%sRHOZ(i+1,j,k)+this%sRHOZold(i+1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)+dt*(this%divw_x( 0,i,j,k)*this%itpw_x(-1,i  ,j,k)*rhoUm)*this%sRHOZ(i-1,j,k)/(this%sRHOZ(i-1,j,k)+this%sRHOZold(i-1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)+dt*(this%divw_y(+1,i,j,k)*this%itpw_y( 0,i,j+1,k)*rhoVp)*this%sRHOZ(i,j+1,k)/(this%sRHOZ(i,j+1,k)+this%sRHOZold(i,j+1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)+dt*(this%divw_y( 0,i,j,k)*this%itpw_y(-1,i,j  ,k)*rhoVm)*this%sRHOZ(i,j-1,k)/(this%sRHOZ(i,j-1,k)+this%sRHOZold(i,j-1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)+dt*(this%divw_z( 0,i,j,k)*this%itpw_z(+1,i,j,k  )*rhoWp)*this%sRHOZ(i,j+1,k)/(this%sRHOZ(i,j,k+1)+this%sRHOZold(i,j,k+1)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)+dt*(this%divw_z(-1,i,j,k)*this%itpw_z( 0,i,j,k-1)*rhoWm)*this%sRHOZ(i,j-1,k)/(this%sRHOZ(i,j,k-1)+this%sRHOZold(i,j,k-1)*(1.0_WP-this%theta)/this%theta)
             end do
          end do
       end do
@@ -2381,13 +2384,13 @@ contains
                &                                                         this%divw_y(+1,i,j,k)*       this%visc_yz(i,j+1,k)*this%grdw_y(-1,i,j+1,k)+&
                &                                                         this%divw_y( 0,i,j,k)*       this%visc_yz(i,j  ,k)*this%grdw_y( 0,i,j  ,k)+&
                &                                                         this%divw_z( 0,i,j,k)*2.0_WP*this%visc   (i,j,k  )*this%grdw_z( 0,i,j,k  )+&
-               &                                                         this%divw_z(-1,i,j,k)*2.0_WP*this%visc   (i,j,k-1)*this%grdw_z(+1,i,j,k-1))*this%sRHOZ(i,j,k)  /(this%sRHOZ(i,j,k)  +this%sRHOZold(i,j,k)  )
-               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)-dt*(this%divw_x(+1,i,j,k)*       this%visc_zx(i+1,j,k)*this%grdw_x( 0,i+1,j,k))*this%sRHOZ(i+1,j,k)/(this%sRHOZ(i+1,j,k)+this%sRHOZold(i+1,j,k))
-               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)-dt*(this%divw_x( 0,i,j,k)*       this%visc_zx(i  ,j,k)*this%grdw_x(-1,i  ,j,k))*this%sRHOZ(i-1,j,k)/(this%sRHOZ(i-1,j,k)+this%sRHOZold(i-1,j,k))
-               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)-dt*(this%divw_y(+1,i,j,k)*       this%visc_yz(i,j+1,k)*this%grdw_y( 0,i,j+1,k))*this%sRHOZ(i,j+1,k)/(this%sRHOZ(i,j+1,k)+this%sRHOZold(i,j+1,k))
-               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)-dt*(this%divw_y( 0,i,j,k)*       this%visc_yz(i,j  ,k)*this%grdw_y(-1,i,j  ,k))*this%sRHOZ(i,j-1,k)/(this%sRHOZ(i,j-1,k)+this%sRHOZold(i,j-1,k))
-               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)-dt*(this%divw_z( 0,i,j,k)*2.0_WP*this%visc   (i,j,k  )*this%grdw_z(+1,i,j,k  ))*this%sRHOZ(i,j+1,k)/(this%sRHOZ(i,j,k+1)+this%sRHOZold(i,j,k+1))
-               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)-dt*(this%divw_z(-1,i,j,k)*2.0_WP*this%visc   (i,j,k-1)*this%grdw_z( 0,i,j,k-1))*this%sRHOZ(i,j-1,k)/(this%sRHOZ(i,j,k-1)+this%sRHOZold(i,j,k-1))
+               &                                                         this%divw_z(-1,i,j,k)*2.0_WP*this%visc   (i,j,k-1)*this%grdw_z(+1,i,j,k-1))*this%sRHOZ(i,j,k)  /(this%sRHOZ(i,j,k)  +this%sRHOZold(i,j,k)  *(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(2,i,j,k)=this%implicit%opr(2,i,j,k)-dt*(this%divw_x(+1,i,j,k)*       this%visc_zx(i+1,j,k)*this%grdw_x( 0,i+1,j,k))*this%sRHOZ(i+1,j,k)/(this%sRHOZ(i+1,j,k)+this%sRHOZold(i+1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(3,i,j,k)=this%implicit%opr(3,i,j,k)-dt*(this%divw_x( 0,i,j,k)*       this%visc_zx(i  ,j,k)*this%grdw_x(-1,i  ,j,k))*this%sRHOZ(i-1,j,k)/(this%sRHOZ(i-1,j,k)+this%sRHOZold(i-1,j,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(4,i,j,k)=this%implicit%opr(4,i,j,k)-dt*(this%divw_y(+1,i,j,k)*       this%visc_yz(i,j+1,k)*this%grdw_y( 0,i,j+1,k))*this%sRHOZ(i,j+1,k)/(this%sRHOZ(i,j+1,k)+this%sRHOZold(i,j+1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(5,i,j,k)=this%implicit%opr(5,i,j,k)-dt*(this%divw_y( 0,i,j,k)*       this%visc_yz(i,j  ,k)*this%grdw_y(-1,i,j  ,k))*this%sRHOZ(i,j-1,k)/(this%sRHOZ(i,j-1,k)+this%sRHOZold(i,j-1,k)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(6,i,j,k)=this%implicit%opr(6,i,j,k)-dt*(this%divw_z( 0,i,j,k)*2.0_WP*this%visc   (i,j,k  )*this%grdw_z(+1,i,j,k  ))*this%sRHOZ(i,j+1,k)/(this%sRHOZ(i,j,k+1)+this%sRHOZold(i,j,k+1)*(1.0_WP-this%theta)/this%theta)
+               this%implicit%opr(7,i,j,k)=this%implicit%opr(7,i,j,k)-dt*(this%divw_z(-1,i,j,k)*2.0_WP*this%visc   (i,j,k-1)*this%grdw_z( 0,i,j,k-1))*this%sRHOZ(i,j-1,k)/(this%sRHOZ(i,j,k-1)+this%sRHOZold(i,j,k-1)*(1.0_WP-this%theta)/this%theta)
             end do
          end do
       end do

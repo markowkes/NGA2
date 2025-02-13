@@ -39,7 +39,8 @@ module simulation
    !> Private work arrays
    real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
    real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
-   real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities
+   real(WP), dimension(:,:,:), allocatable :: Ui,Vi,Wi            !< Cell-centered velocities (based on Umid)
+   real(WP), dimension(:,:,:,:), allocatable :: vel               !< Other cell-centered velocity (based on U)
    
 contains
    
@@ -60,6 +61,7 @@ contains
          allocate(Ui  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Vi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
          allocate(Wi  (cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
+         allocate(vel (1:3,cfg%imino_:cfg%imaxo_,cfg%jmino_:cfg%jmaxo_,cfg%kmino_:cfg%kmaxo_))
       end block allocate_work_arrays
       
       
@@ -140,6 +142,7 @@ contains
          real(WP) :: Ga,Bo,r,m
          ! Create flow solver
          call fs%initialize(cfg=cfg,name='Two-phase NS')
+         fs%theta=0.5_WP+1.0e-2_WP
          ! Read in adimensional parameters
          call param_read('Galileo number',Ga)
          call param_read('Bond number',Bo)
@@ -170,6 +173,7 @@ contains
          call fs%update_density(vf=vf%VF)
          ! Calculate cell-centered velocities and divergence
          call fs%interp_velmid(Ui,Vi,Wi)
+         call fs%interp_vel(vel(1,:,:,:),vel(2,:,:,:),vel(3,:,:,:))
          call fs%get_div()
       end block initialize_velocity
       
@@ -201,6 +205,7 @@ contains
          call param_read('Ensight output period',ens_evt%tper)
          ! Add variables to output
          call ens_out%add_vector('velocity',Ui,Vi,Wi)
+         call ens_out%add_vector('othervel',vel(1,:,:,:),vel(2,:,:,:),vel(3,:,:,:))
          call ens_out%add_scalar('VOF',vf%VF)
          call ens_out%add_scalar('pressure',fs%P)
          call ens_out%add_scalar('curvature',vf%curv)
@@ -355,9 +360,9 @@ contains
 
             ! Poisson equation ================================================
             ! Compute predictor Umid
-            fs%Umid=(fs%sRHOX*fs%U+fs%sRHOXold*fs%Uold)/(fs%sRHOX+fs%sRHOXold)
-            fs%Vmid=(fs%sRHOY*fs%V+fs%sRHOYold*fs%Vold)/(fs%sRHOY+fs%sRHOYold)
-            fs%Wmid=(fs%sRHOZ*fs%W+fs%sRHOZold*fs%Wold)/(fs%sRHOZ+fs%sRHOZold)
+            fs%Umid=(fs%sRHOX*fs%U*fs%theta+fs%sRHOXold*fs%Uold*(1.0_WP-fs%theta))/(fs%sRHOX*fs%theta+fs%sRHOXold*(1.0_WP-fs%theta))
+            fs%Vmid=(fs%sRHOY*fs%V*fs%theta+fs%sRHOYold*fs%Vold*(1.0_WP-fs%theta))/(fs%sRHOY*fs%theta+fs%sRHOYold*(1.0_WP-fs%theta))
+            fs%Wmid=(fs%sRHOZ*fs%W*fs%theta+fs%sRHOZold*fs%Wold*(1.0_WP-fs%theta))/(fs%sRHOZ*fs%theta+fs%sRHOZold*(1.0_WP-fs%theta))
             
             ! Solve Poisson equation
             call fs%update_laplacian()
@@ -374,9 +379,9 @@ contains
             fs%U=fs%U-time%dt*resU/(fs%sRHOX**2)
             fs%V=fs%V-time%dt*resV/(fs%sRHOY**2)
             fs%W=fs%W-time%dt*resW/(fs%sRHOZ**2)
-            fs%Umid=fs%Umid-time%dt*resU/((fs%sRHOX+fs%sRHOXold)*fs%sRHOX)
-            fs%Vmid=fs%Vmid-time%dt*resV/((fs%sRHOY+fs%sRHOYold)*fs%sRHOY)
-            fs%Wmid=fs%Wmid-time%dt*resW/((fs%sRHOZ+fs%sRHOZold)*fs%sRHOZ)
+            fs%Umid=fs%Umid-time%dt*resU/((fs%sRHOX+fs%sRHOXold*(1.0_WP-fs%theta)/fs%theta)*fs%sRHOX)
+            fs%Vmid=fs%Vmid-time%dt*resV/((fs%sRHOY+fs%sRHOYold*(1.0_WP-fs%theta)/fs%theta)*fs%sRHOY)
+            fs%Wmid=fs%Wmid-time%dt*resW/((fs%sRHOZ+fs%sRHOZold*(1.0_WP-fs%theta)/fs%theta)*fs%sRHOZ)
             
             ! Increment sub-iteration counter =================================
             time%it=time%it+1
@@ -385,6 +390,7 @@ contains
          
          ! Recompute interpolated velocity and divergence
          call fs%interp_velmid(Ui,Vi,Wi)
+         call fs%interp_vel(vel(1,:,:,:),vel(2,:,:,:),vel(3,:,:,:))
          call fs%get_div()
          
          ! Output to ensight
