@@ -149,11 +149,11 @@ contains
          call param_read('Density ratio',r)
          call param_read('Viscosity ratio',m)
          ! Assign constant viscosity to each phase
-         fs%visc_l=Ga**(-2)
+         fs%visc_l=Ga**(-0.5_WP)
          fs%visc_g=fs%visc_l/m
          fs%rho_l=1.0_WP
          fs%rho_g=fs%rho_l/r
-         fs%sigma=Bo**(-1)
+         fs%sigma=Bo**(-1.0_WP)
          fs%gravity=[0.0_WP,-1.0_WP,0.0_WP]
          ! Configure pressure solver
          ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg2,nst=7)
