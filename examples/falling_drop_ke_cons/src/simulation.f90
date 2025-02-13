@@ -142,7 +142,8 @@ contains
          real(WP) :: Ga,Bo,r,m
          ! Create flow solver
          call fs%initialize(cfg=cfg,name='Two-phase NS')
-         fs%theta=0.5_WP+1.0e-2_WP
+         ! Add slight backward bias to CN scheme
+         fs%theta=fs%theta+1.0e-2_WP
          ! Read in adimensional parameters
          call param_read('Galileo number',Ga)
          call param_read('Bond number',Bo)

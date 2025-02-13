@@ -14,7 +14,7 @@ Droplet center : 0 5 0
 Pool depth : 2
 
 # Fluid properties
-Galileo number :  1e5
+Galileo number :  1e6
 Bond number :     1e3
 Density ratio :   1000
 Viscosity ratio : 50
