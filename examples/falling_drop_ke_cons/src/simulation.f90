@@ -171,7 +171,7 @@ contains
       ! Generate initial conditions for velocity
       initialize_velocity: block
          ! Initialize density
-         call fs%update_density(vf=vf%VF)
+         resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
          ! Calculate cell-centered velocities and divergence
          call fs%interp_velmid(Ui,Vi,Wi)
          call fs%interp_vel(vel(1,:,:,:),vel(2,:,:,:),vel(3,:,:,:))
@@ -304,7 +304,7 @@ contains
             end if
             
             ! Update sqrt(face density) and momentum vector
-            call fs%update_density(vf=vf%VF)
+            resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
             fs%rhoU=fs%rho_l*vf%UFl(1,:,:,:)+fs%rho_g*vf%UFg(1,:,:,:)
             fs%rhoV=fs%rho_l*vf%UFl(2,:,:,:)+fs%rho_g*vf%UFg(2,:,:,:)
             fs%rhoW=fs%rho_l*vf%UFl(3,:,:,:)+fs%rho_g*vf%UFg(3,:,:,:)

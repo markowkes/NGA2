@@ -2408,17 +2408,12 @@ contains
    end subroutine solve_implicit
    
 
-   !> Update density from VF field
-   subroutine update_density(this,VF)
+   !> Update density from rho field at n+1
+   subroutine update_density(this,rho)
       implicit none
       class(tpns), intent(inout) :: this
-      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: VF !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
+      real(WP), dimension(this%cfg%imino_:,this%cfg%jmino_:,this%cfg%kmino_:), intent(in) :: rho !< Needs to be (imino_:imaxo_,jmino_:jmaxo_,kmino_:kmaxo_)
       integer :: i,j,k
-      real(WP), dimension(:,:,:), allocatable :: rho
-      ! Allocate rho array
-      allocate(rho(this%cfg%imino_:this%cfg%imaxo_,this%cfg%jmino_:this%cfg%jmaxo_,this%cfg%kmino_:this%cfg%kmaxo_))
-      ! Build centered density
-      rho=this%rho_l*VF+this%rho_g*(1.0_WP-VF)
       ! Calculate square root of face densities
       do k=this%cfg%kmino_  ,this%cfg%kmaxo_
          do j=this%cfg%jmino_  ,this%cfg%jmaxo_
@@ -2449,8 +2444,6 @@ contains
       call this%cfg%sync(this%sRHOX)
       call this%cfg%sync(this%sRHOY)
       call this%cfg%sync(this%sRHOZ)
-      ! Deallocate rho array
-      deallocate(rho)
    end subroutine update_density
    
    
