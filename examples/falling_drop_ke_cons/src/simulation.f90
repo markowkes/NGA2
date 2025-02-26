@@ -448,6 +448,7 @@ contains
             use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
             use parallel, only: MPI_REAL_WP
             integer :: n,i,j,k,ierr
+            ! Adjust VOF field
             vof_removed=0.0_WP
             do n=1,vof_removal_layer%no_
                i=vof_removal_layer%map(1,n)
@@ -458,6 +459,8 @@ contains
             end do
             call MPI_ALLREDUCE(MPI_IN_PLACE,vof_removed,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
             call vf%clean_irl_and_band()
+            ! Also adjust density
+            resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
          end block remove_vof
          
          ! Output to ensight
