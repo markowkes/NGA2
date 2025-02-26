@@ -2,6 +2,7 @@
 module simulation
    use precision,         only: WP
    use geometry,          only: cfg
+   use iterator_class,    only: iterator
    use hypre_str_class,   only: hypre_str
    use ddadi_class,       only: ddadi
    use tpns_class,        only: tpns
@@ -35,6 +36,11 @@ module simulation
    !> Monitoring files
    type(monitor) :: mfile      !< General simulation monitoring
    type(monitor) :: cflfile    !< CFL monitoring
+   
+   !> Iterator for VOF removal
+   type(iterator) :: vof_removal_layer  !< Edge of domain where we actively remove VOF
+   integer        :: nlayer=4           !< Size of buffer layer for VOF removal
+   real(WP)       :: vof_removed        !< Integral of VOF removed
    
    !> Private work arrays
    real(WP), dimension(:,:,:,:,:), allocatable :: gradU           !< Velocity gradient
@@ -136,29 +142,37 @@ contains
       end block create_and_initialize_vof
       
       
+      ! Create an iterator for removing VOF at edges
+      create_iterator: block
+         vof_removal_layer=iterator(cfg,'VOF removal',vof_removal_layer_locator)
+         vof_removed=0.0_WP
+      end block create_iterator
+      
+      
       ! Create a two-phase flow solver without bconds
       create_flow_solver: block
          use hypre_str_class, only: pcg_pfmg2
-         real(WP) :: Ga,Bo,r,m
+         real(WP) :: Re,Fr,We,r,m
          ! Create flow solver
          call fs%initialize(cfg=cfg,name='Two-phase NS')
          ! Add slight backward bias to CN scheme
          fs%theta=fs%theta+1.0e-2_WP
          ! Read in adimensional parameters
-         call param_read('Galileo number',Ga)
-         call param_read('Bond number',Bo)
-         call param_read('Density ratio',r)
-         call param_read('Viscosity ratio',m)
-         ! Assign constant viscosity to each phase
-         fs%visc_l=Ga**(-0.5_WP)
-         fs%visc_g=fs%visc_l/m
+         call param_read('Froude number',Fr)     ! Fr=U^2/(g*D)=1/g
+         call param_read('Weber number',We)      ! We=rho_l*U^2*D/sigma=1/sigma
+         call param_read('Reynolds number',Re)   ! Re=rho_l*U*D/mu_l=1/mu_l
+         call param_read('Density ratio',r)      ! r=rho_l/rho_g=1/rho_g
+         call param_read('Viscosity ratio',m)    ! m=mu_l/mu_g
+         ! Assign fluid properties to each phase
+         fs%gravity=[0.0_WP,-Fr**(-1.0_WP),0.0_WP]
+         fs%sigma=We**(-1.0_WP)
          fs%rho_l=1.0_WP
          fs%rho_g=fs%rho_l/r
-         fs%sigma=Bo**(-1.0_WP)
-         fs%gravity=[0.0_WP,-1.0_WP,0.0_WP]
+         fs%visc_l=Re**(-1.0_WP)
+         fs%visc_g=fs%visc_l/m
          ! Configure pressure solver
          ps=hypre_str(cfg=cfg,name='Pressure',method=pcg_pfmg2,nst=7)
-         ps%maxlevel=12
+         ps%maxlevel=24
          call param_read('Pressure iteration',ps%maxit)
          call param_read('Pressure tolerance',ps%rcvg)
          ! Configure implicit velocity solver
@@ -170,8 +184,30 @@ contains
       
       ! Generate initial conditions for velocity
       initialize_velocity: block
+         use vfs_class, only: VFlo
+         integer :: i,j,k
          ! Initialize density
          resU=fs%rho_l*vf%VF+fs%rho_g*(1.0_WP-vf%VF); call fs%update_density(rho=resU)
+         ! Initialize velocity
+         do k=cfg%kmin_,cfg%kmax_
+            do j=cfg%jmin_,cfg%jmax_
+               do i=cfg%imin_,cfg%imax_
+                  if (cfg%ym(j).gt.depth.and.maxval(vf%VF(i,j-1:j,k)).gt.VFlo) fs%Vmid(i,j,k)=-1.0_WP
+               end do
+            end do
+         end do
+         call cfg%sync(fs%Vmid)
+         ! Make it solenoidal
+         call fs%update_laplacian()
+         call fs%get_div()
+         fs%psolv%rhs=-fs%cfg%vol*fs%div
+         fs%psolv%sol=0.0_WP
+         call fs%psolv%solve()
+         call fs%shift_p(fs%psolv%sol)
+         call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
+         fs%Umid=fs%Umid-resU/(fs%sRHOX**2); fs%U=fs%Umid
+         fs%Vmid=fs%Vmid-resV/(fs%sRHOY**2); fs%V=fs%Vmid
+         fs%Wmid=fs%Wmid-resW/(fs%sRHOZ**2); fs%W=fs%Wmid
          ! Calculate cell-centered velocities and divergence
          call fs%interp_velmid(Ui,Vi,Wi)
          call fs%interp_vel(vel(1,:,:,:),vel(2,:,:,:),vel(3,:,:,:))
@@ -235,6 +271,7 @@ contains
          call mfile%add_column(vf%VFmax,'VOF maximum')
          call mfile%add_column(vf%VFmin,'VOF minimum')
          call mfile%add_column(vf%VFint,'VOF integral')
+         call mfile%add_column(vof_removed,'VOF removed')
          call mfile%add_column(fs%divmax,'Maximum divergence')
          call mfile%add_column(fs%psolv%it,'Pressure iteration')
          call mfile%add_column(fs%psolv%rerr,'Pressure error')
@@ -266,6 +303,18 @@ contains
          ! Add the pool
          G=max(G,depth-xyz(2))
       end function levelset_falling_drop
+      
+      
+      !> Function that localizes region of VOF removal
+      function vof_removal_layer_locator(pg,i,j,k) result(isIn)
+         use pgrid_class, only: pgrid
+         class(pgrid), intent(in) :: pg
+         integer, intent(in) :: i,j,k
+         logical :: isIn
+         isIn=.false.
+         if (j.ge.pg%jmax-nlayer) isIn=.true.
+      end function vof_removal_layer_locator
+      
       
    end subroutine simulation_init
    
@@ -393,6 +442,23 @@ contains
          call fs%interp_velmid(Ui,Vi,Wi)
          call fs%interp_vel(vel(1,:,:,:),vel(2,:,:,:),vel(3,:,:,:))
          call fs%get_div()
+         
+         ! Remove VOF at edge of domain
+         remove_vof: block
+            use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
+            use parallel, only: MPI_REAL_WP
+            integer :: n,i,j,k,ierr
+            vof_removed=0.0_WP
+            do n=1,vof_removal_layer%no_
+               i=vof_removal_layer%map(1,n)
+               j=vof_removal_layer%map(2,n)
+               k=vof_removal_layer%map(3,n)
+               if (n.le.vof_removal_layer%n_) vof_removed=vof_removed+cfg%vol(i,j,k)*vf%VF(i,j,k)
+               vf%VF(i,j,k)=0.0_WP
+            end do
+            call MPI_ALLREDUCE(MPI_IN_PLACE,vof_removed,1,MPI_REAL_WP,MPI_SUM,cfg%comm,ierr)
+            call vf%clean_irl_and_band()
+         end block remove_vof
          
          ! Output to ensight
          if (ens_evt%occurs()) then
