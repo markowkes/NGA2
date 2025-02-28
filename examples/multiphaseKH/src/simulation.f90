@@ -85,7 +85,8 @@ contains
       use param, only: param_read,param_exists
       implicit none
       integer :: nwaveX,nwaveZ
-      real(WP), dimension(:), allocatable :: wnumbX,wshiftX,wampX,wnumbZ,wshiftZ,wampZ
+      real(WP) :: wamp
+      real(WP), dimension(:), allocatable :: wnumbX,wshiftX,wnumbZ,wshiftZ
       
       ! Allocate work arrays
       allocate_work_arrays: block
@@ -128,16 +129,15 @@ contains
          ! Create a VOF solver
          call vf%initialize(cfg=cfg,reconstruction_method=plicnet,transport_method=remap,name='VOF')
          ! Prepare interface disturbance in X
+         call param_read('Wave amplitude',wamp)
          call param_read('NwaveX',NwaveX,default=-1)
          if (NwaveX.gt.0) then
-            allocate(wnumbX(nwaveX),wshiftX(nwaveX),wampX(nwaveX))
+            allocate(wnumbX(nwaveX),wshiftX(nwaveX))
             call param_read('wnumbX',wnumbX)
             call param_read('wshiftX',wshiftX)
-            call param_read('wampX',wampX)
          else
             nwaveX=6
-            allocate(wnumbX(nwaveX),wshiftX(nwaveX),wampX(nwaveX))
-            wampX=0.3_WP/real(nwaveX,WP)
+            allocate(wnumbX(nwaveX),wshiftX(nwaveX))
             wnumbX=[3.0_WP,4.0_WP,5.0_WP,6.0_WP,7.0_WP,8.0_WP]*twoPi/cfg%xL
             if (cfg%amRoot) then
                do n=1,nwaveX
@@ -149,14 +149,12 @@ contains
          ! Prepare interface disturbance in Z
          call param_read('NwaveZ',NwaveZ,default=-1)
          if (NwaveZ.gt.0) then
-            allocate(wnumbZ(nwaveZ),wshiftZ(nwaveZ),wampZ(nwaveZ))
+            allocate(wnumbZ(nwaveZ),wshiftZ(nwaveZ))
             call param_read('wnumbZ',wnumbZ)
             call param_read('wshiftZ',wshiftZ)
-            call param_read('wampZ',wampZ)
          else
             nwaveZ=6
-            allocate(wnumbZ(nwaveZ),wshiftZ(nwaveZ),wampZ(nwaveZ))
-            wampZ=0.3_WP/real(nwaveZ,WP)
+            allocate(wnumbZ(nwaveZ),wshiftZ(nwaveZ))
             wnumbZ=[3.0_WP,4.0_WP,5.0_WP,6.0_WP,7.0_WP,8.0_WP]*twoPi/cfg%zL
             if (cfg%amRoot) then
                do n=1,nwaveZ
@@ -165,17 +163,14 @@ contains
             end if
             call MPI_BCAST(wshiftZ,nwaveZ,MPI_REAL_WP,0,cfg%comm,ierr)
          end if
-         if (vf%cfg%nz.eq.1) wampZ=0.0_WP
          ! Print out initial disturbance
          if (vf%cfg%amRoot) then
             write(message,'("[Initial conditions] =>  NwaveX =",i6)')              nwaveX; call log(message)
             write(message,'("[Initial conditions] =>  wnumbX =",1000(es12.5,x))')  wnumbX; call log(message)
             write(message,'("[Initial conditions] => wshiftX =",1000(es12.5,x))') wshiftX; call log(message)
-            write(message,'("[Initial conditions] =>   wampX =",1000(es12.5,x))')   wampX; call log(message)
             write(message,'("[Initial conditions] =>  NwaveZ =",i6)')              nwaveZ; call log(message)
             write(message,'("[Initial conditions] =>  wnumbZ =",1000(es12.5,x))')  wnumbZ; call log(message)
             write(message,'("[Initial conditions] => wshiftZ =",1000(es12.5,x))') wshiftZ; call log(message)
-            write(message,'("[Initial conditions] =>   wampZ =",1000(es12.5,x))')   wampZ; call log(message)
          end if
          ! Create the wavy interface
          do k=vf%cfg%kmino_,vf%cfg%kmaxo_
@@ -252,8 +247,9 @@ contains
       initialize_velocity: block
          use string,   only: str_long
          use messager, only: log
+         use random,   only: random_uniform
          character(str_long) :: message
-         real(WP) :: dg,dl,di,Ug,Ul,Uint
+         real(WP) :: dg,dl,di,Ug,Ul,Uint,namp
          integer :: i,j,k
          ! Read in initial velocity parameters
          call param_read('Gas thickness',dg)
@@ -261,6 +257,7 @@ contains
          call param_read('Gas velocity',Ug)
          call param_read('Liquid velocity',Ul)
          call param_read('Deficit parameter',di)
+         call param_read('Noise amplitude',namp)
          ! Calculate interface velocity
          Uint=di*dg*(Ul*fs%visc_l/dl+Ug*fs%visc_g/dg)/(fs%visc_l+fs%visc_g)
          ! Impose the profile
@@ -276,9 +273,27 @@ contains
                   end if
                   ! Add the deficit
                   fs%U(i,j,k)=fs%U(i,j,k)+Uint*(1.0_WP-erf(abs(fs%cfg%ym(j))/(dg*di)))
+                  ! Add fluctuations
+                  fs%U(i,j,k)=fs%U(i,j,k)+random_uniform(lo=-0.5_WP*namp,hi=+0.5_WP*namp)
                end do
             end do
          end do
+         call fs%cfg%sync(fs%U)
+         ! Make it solenoidal
+         call fs%get_olddensity(vf)
+         fs%rho_U=fs%rho_Uold
+         fs%rho_V=fs%rho_Vold
+         fs%rho_W=fs%rho_Wold
+         call fs%update_laplacian()
+         call fs%get_div()
+         fs%psolv%rhs=-fs%cfg%vol*fs%div
+         fs%psolv%sol=0.0_WP
+         call fs%psolv%solve()
+         call fs%shift_p(fs%psolv%sol)
+         call fs%get_pgrad(fs%psolv%sol,resU,resV,resW)
+         fs%U=fs%U-resU/fs%rho_U
+         fs%V=fs%V-resV/fs%rho_V
+         fs%W=fs%W-resW/fs%rho_W
          ! Calculate cell-centered velocities and divergence
          call fs%interp_vel(Ui,Vi,Wi)
          call fs%get_div()
@@ -361,7 +376,7 @@ contains
          G=-xyz(2)
          do nX=1,nwaveX
             do nZ=1,nwaveZ
-               G=G+wampX(nX)*cos(wnumbX(nX)*(xyz(1)-wshiftX(nX)))*wampZ(nZ)*cos(wnumbZ(nZ)*(xyz(3)-wshiftZ(nZ)))
+               G=G+wamp*cos(wnumbX(nX)*(xyz(1)-wshiftX(nX)))*cos(wnumbZ(nZ)*(xyz(3)-wshiftZ(nZ)))
             end do
          end do
       end function levelset_wavy
