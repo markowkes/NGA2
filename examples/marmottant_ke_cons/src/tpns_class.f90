@@ -173,6 +173,8 @@ module tpns_class
       procedure :: correct_mfr                            !< Correct for mfr mismatch to ensure global conservation
       procedure :: shift_p                                !< Shift pressure to have zero average
       procedure :: update_density                         !< Calculate sqrt of face density from volume fraction field
+      procedure :: get_Umid                               !< Calculate Umid from U and Uold
+      procedure :: get_U                                  !< Calculate U from Umid and Uold
       procedure :: get_viscosity                          !< Calculate viscosity fields from subcell phasic volume data in a vfs object
       procedure :: solve_implicit                         !< Solve for the velocity residuals implicitly
       procedure :: addsrc_gravity                         !< Add gravitational body force
@@ -2062,7 +2064,6 @@ contains
       type(bcond), pointer :: my_bc
       real(WP), dimension(:), allocatable :: my_mfr,my_area
       real(WP), dimension(:), allocatable :: canCorrect
-      real(WP) :: Umid,Vmid,Wmid
       
       ! Ensure this%mfr is of proper size
       if (.not.allocated(this%mfr)) then
@@ -2108,22 +2109,19 @@ contains
             case ('x')
                do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
-                  Umid=(this%sRHOX(i,j,k)*this%U(i,j,k)*this%theta+this%sRHOXold(i,j,k)*this%Uold(i,j,k)*(1.0_WP-this%theta))/(this%sRHOX(i,j,k)*this%theta+this%sRHOXold(i,j,k)*(1.0_WP-this%theta))
-                  my_mfr(ibc)=my_mfr(ibc)+my_bc%rdir*Umid*this%cfg%dy(j)*this%cfg%dz(k)
+                  my_mfr(ibc)=my_mfr(ibc)+my_bc%rdir*this%Umid(i,j,k)*this%cfg%dy(j)*this%cfg%dz(k)
                   my_area(ibc)=my_area(ibc)+this%cfg%dy(j)*this%cfg%dz(k)
                end do
             case ('y')
                do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
-                  Vmid=(this%sRHOY(i,j,k)*this%V(i,j,k)*this%theta+this%sRHOYold(i,j,k)*this%Vold(i,j,k)*(1.0_WP-this%theta))/(this%sRHOY(i,j,k)*this%theta+this%sRHOYold(i,j,k)*(1.0_WP-this%theta))
-                  my_mfr(ibc)=my_mfr(ibc)+my_bc%rdir*Vmid*this%cfg%dz(k)*this%cfg%dx(i)
+                  my_mfr(ibc)=my_mfr(ibc)+my_bc%rdir*this%Vmid(i,j,k)*this%cfg%dz(k)*this%cfg%dx(i)
                   my_area(ibc)=my_area(ibc)+this%cfg%dz(k)*this%cfg%dx(i)
                end do
             case ('z')
                do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
-                  Wmid=(this%sRHOZ(i,j,k)*this%W(i,j,k)*this%theta+this%sRHOZold(i,j,k)*this%Wold(i,j,k)*(1.0_WP-this%theta))/(this%sRHOZ(i,j,k)*this%theta+this%sRHOZold(i,j,k)*(1.0_WP-this%theta))
-                  my_mfr(ibc)=my_mfr(ibc)+my_bc%rdir*Wmid*this%cfg%dx(i)*this%cfg%dy(j)
+                  my_mfr(ibc)=my_mfr(ibc)+my_bc%rdir*this%Wmid(i,j,k)*this%cfg%dx(i)*this%cfg%dy(j)
                   my_area(ibc)=my_area(ibc)+this%cfg%dx(i)*this%cfg%dy(j)
                end do
             end select
@@ -2181,17 +2179,17 @@ contains
             case ('x')
                do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
-                  this%U(i,j,k)=this%U(i,j,k)+my_bc%rdir*vel_correction*(this%sRHOX(i,j,k)*this%theta+this%sRHOXold(i,j,k)*(1.0_WP-this%theta))/(this%sRHOX(i,j,k)*this%theta)
+                  this%Umid(i,j,k)=this%Umid(i,j,k)+my_bc%rdir*vel_correction
                end do
             case ('y')
                do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
-                  this%V(i,j,k)=this%V(i,j,k)+my_bc%rdir*vel_correction*(this%sRHOY(i,j,k)*this%theta+this%sRHOYold(i,j,k)*(1.0_WP-this%theta))/(this%sRHOY(i,j,k)*this%theta)
+                  this%Vmid(i,j,k)=this%Vmid(i,j,k)+my_bc%rdir*vel_correction
                end do
             case ('z')
                do n=1,my_bc%itr%n_
                   i=my_bc%itr%map(1,n); j=my_bc%itr%map(2,n); k=my_bc%itr%map(3,n)
-                  this%W(i,j,k)=this%W(i,j,k)+my_bc%rdir*vel_correction*(this%sRHOZ(i,j,k)*this%theta+this%sRHOZold(i,j,k)*(1.0_WP-this%theta))/(this%sRHOZ(i,j,k)*this%theta)
+                  this%Wmid(i,j,k)=this%Wmid(i,j,k)+my_bc%rdir*vel_correction
                end do
             end select
             
@@ -2203,9 +2201,9 @@ contains
       end do
       
       ! Sync full fields
-      call this%cfg%sync(this%U)
-      call this%cfg%sync(this%V)
-      call this%cfg%sync(this%W)
+      call this%cfg%sync(this%Umid)
+      call this%cfg%sync(this%Vmid)
+      call this%cfg%sync(this%Wmid)
 
    end subroutine correct_mfr
    
@@ -2449,6 +2447,26 @@ contains
       call this%cfg%sync(this%sRHOY)
       call this%cfg%sync(this%sRHOZ)
    end subroutine update_density
+   
+   
+   !> Get Umid from U and Uold
+   subroutine get_Umid(this)
+      implicit none
+      class(tpns), intent(inout) :: this
+      this%Umid=(this%sRHOX*this%U*this%theta+this%sRHOXold*this%Uold*(1.0_WP-this%theta))/(this%sRHOX*this%theta+this%sRHOXold*(1.0_WP-this%theta))
+      this%Vmid=(this%sRHOY*this%V*this%theta+this%sRHOYold*this%Vold*(1.0_WP-this%theta))/(this%sRHOY*this%theta+this%sRHOYold*(1.0_WP-this%theta))
+      this%Wmid=(this%sRHOZ*this%W*this%theta+this%sRHOZold*this%Wold*(1.0_WP-this%theta))/(this%sRHOZ*this%theta+this%sRHOZold*(1.0_WP-this%theta))
+   end subroutine get_Umid
+   
+   
+   !> Get U from Umid and Uold
+   subroutine get_U(this)
+      implicit none
+      class(tpns), intent(inout) :: this
+      this%U=(this%Umid*(this%sRHOX*this%theta+this%sRHOXold*(1.0_WP-this%theta))-this%sRHOXold*this%Uold*(1.0_WP-this%theta))/(this%sRHOX*this%theta)
+      this%V=(this%Vmid*(this%sRHOY*this%theta+this%sRHOYold*(1.0_WP-this%theta))-this%sRHOYold*this%Vold*(1.0_WP-this%theta))/(this%sRHOY*this%theta)
+      this%W=(this%Wmid*(this%sRHOZ*this%theta+this%sRHOZold*(1.0_WP-this%theta))-this%sRHOZold*this%Wold*(1.0_WP-this%theta))/(this%sRHOZ*this%theta)
+   end subroutine get_U
    
    
    !> Prepare viscosity arrays from vfs object
