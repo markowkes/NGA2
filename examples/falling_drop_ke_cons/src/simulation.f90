@@ -403,7 +403,7 @@ contains
             fs%W=fs%W+resW
             
             ! Sync and apply boundary conditions
-            call fs%apply_bcond(time%t,time%dt) !<< needs to do both U and Umid?
+            call fs%apply_bcond(time%t,time%dt)
 
             ! Enforce global conservation wrt Umid
             call fs%correct_mfr()

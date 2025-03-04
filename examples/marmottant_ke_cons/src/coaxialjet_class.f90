@@ -168,7 +168,7 @@ contains
       
       ! Initialize our VOF solver and field
       create_and_initialize_vof: block
-         use vfs_class, only: VFlo,VFhi,plicnet,remap
+         use vfs_class, only: VFlo,VFhi,plicnet,flux
          use mms_geom,  only: cube_refine_vol
          integer :: i,j,k,n,si,sj,sk
          real(WP), dimension(3,8) :: cube_vertex
@@ -176,7 +176,7 @@ contains
          real(WP) :: vol,area
          integer, parameter :: amr_ref_lvl=4
          ! Create a VOF solver with plicnet reconstruction
-         call this%vf%initialize(cfg=this%cfg,reconstruction_method=plicnet,transport_method=remap,name='VOF')
+         call this%vf%initialize(cfg=this%cfg,reconstruction_method=plicnet,transport_method=flux,name='VOF')
          ! Initialize to clipped cylindrical interface
          call param_read('Liquid diameter',this%Dl)
          do k=this%vf%cfg%kmino_,this%vf%cfg%kmaxo_
@@ -266,7 +266,8 @@ contains
          use hypre_str_class, only: pcg_pfmg2
          use tpns_class,      only: dirichlet,clipped_neumann,slip
          ! Create flow solver
-         this%fs=tpns(cfg=this%cfg,name='Two-phase NS')
+         call this%fs%initialize(cfg=this%cfg,name='Two-phase NS')
+         this%fs%theta=this%fs%theta+1.0e-2_WP
          ! Set the flow properties
          call param_read('Liquid dynamic viscosity',this%fs%visc_l)
          call param_read('Gas dynamic viscosity'   ,this%fs%visc_g)
@@ -292,7 +293,6 @@ contains
          call this%fs%setup(pressure_solver=this%ps,implicit_solver=this%vs)
       end block create_flow_solver
       
-      
       ! Initialize our velocity field
       initialize_velocity: block
          use tpns_class, only: bcond
@@ -302,6 +302,12 @@ contains
          type(bcond), pointer :: mybc
          integer :: n,i,j,k
          real(WP) :: r
+         ! Initialize density
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
+         call this%fs%update_density(rho=this%resU)
+         this%fs%sRHOxold=this%fs%sRHOx
+         this%fs%sRHOyold=this%fs%sRHOy
+         this%fs%sRHOzold=this%fs%sRHOz
          ! Read in inflow conditions
          call param_read('Gas height',this%Hg)
          call param_read('Lip height',this%lip,default=0.0_WP)
@@ -327,8 +333,22 @@ contains
          call this%fs%apply_bcond(this%time%t,this%time%dt)
          ! Adjust MFR for global mass balance
          call this%fs%correct_mfr()
+         ! Copy to Umid and make it solenoidal
+         this%fs%Umid=this%fs%U
+         this%fs%Vmid=this%fs%V
+         this%fs%Wmid=this%fs%W
+         call this%fs%update_laplacian()
+         call this%fs%get_div()
+         this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div
+         this%fs%psolv%sol=0.0_WP
+         call this%fs%psolv%solve()
+         call this%fs%shift_p(this%fs%psolv%sol)
+         call this%fs%get_pgrad(this%fs%psolv%sol,this%resU,this%resV,this%resW)
+         this%fs%Umid=this%fs%Umid-this%resU/this%fs%sRHOX**2; this%fs%U=this%fs%Umid
+         this%fs%Vmid=this%fs%Vmid-this%resV/this%fs%sRHOY**2; this%fs%V=this%fs%Vmid
+         this%fs%Wmid=this%fs%Wmid-this%resW/this%fs%sRHOZ**2; this%fs%W=this%fs%Wmid
          ! Calculate cell-centered velocities and divergence
-         call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
+         call this%fs%interp_velmid(this%Ui,this%Vi,this%Wi)
          call this%fs%get_div()
       end block initialize_velocity
       
@@ -388,10 +408,19 @@ contains
             call this%vf%subcell_vol()
             ! Calculate curvature
             call this%vf%get_curvature()
+            ! Recalculate density
+            this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
+            call this%fs%update_density(rho=this%resU)
+            this%fs%sRHOxold=this%fs%sRHOx
+            this%fs%sRHOyold=this%fs%sRHOy
+            this%fs%sRHOzold=this%fs%sRHOz
             ! Now read in the velocity solver data
             call this%df%pull(name='U',var=this%fs%U)
             call this%df%pull(name='V',var=this%fs%V)
             call this%df%pull(name='W',var=this%fs%W)
+            call this%df%pull(name='Umid',var=this%fs%Umid)
+            call this%df%pull(name='Vmid',var=this%fs%Vmid)
+            call this%df%pull(name='Wmid',var=this%fs%Wmid)
             call this%df%pull(name='P',var=this%fs%P)
             call this%df%pull(name='Pjx',var=this%fs%Pjx)
             call this%df%pull(name='Pjy',var=this%fs%Pjy)
@@ -401,7 +430,7 @@ contains
             ! Adjust MFR for global mass balance
             call this%fs%correct_mfr()
             ! Compute cell-centered velocity
-            call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
+            call this%fs%interp_velmid(this%Ui,this%Vi,this%Wi)
             ! Compute divergence
             call this%fs%get_div()
             ! Also update time
@@ -414,9 +443,9 @@ contains
                if (.not.isdir('restart')) call makedir('restart')
             end if
             ! Prepare pardata object for saving restart files
-            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=11)
+            call this%df%initialize(pg=this%cfg,iopartition=iopartition,filename=trim(this%cfg%name),nval=2,nvar=14)
             this%df%valname=['t ','dt']
-            this%df%varname=['U  ','V  ','W  ','P  ','Pjx','Pjy','Pjz','P11','P12','P13','P14']
+            this%df%varname=['U   ','V   ','W   ','Umid','Vmid','Wmid','P   ','Pjx ','Pjy ','Pjz ','P11 ','P12 ','P13 ','P14 ']
          end if
       end block handle_restart
       
@@ -602,72 +631,84 @@ contains
       ! Remember old VOF
       this%vf%VFold=this%vf%VF
       
-      ! Remember old velocity
-      this%fs%Uold=this%fs%U
-      this%fs%Vold=this%fs%V
-      this%fs%Wold=this%fs%W
-      
-      ! Prepare old staggered density (at n)
-      call this%fs%get_olddensity(vf=this%vf)
-      
-      ! VOF solver step
-      call this%vf%advance(dt=this%time%dt,U=this%fs%U,V=this%fs%V,W=this%fs%W)
-      
-      ! Prepare new staggered viscosity (at n+1)
-      call this%fs%get_viscosity(vf=this%vf,strat=arithmetic_visc)
-      
-      ! Turbulence modeling
-      if (this%use_sgs) then
-         sgs_modeling: block
-            use sgsmodel_class, only: vreman
-            integer :: i,j,k
-            this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
-            call this%fs%get_gradu(this%gradU)
-            call this%sgs%get_visc(type=vreman,dt=this%time%dtold,rho=this%resU,gradu=this%gradU)
-            do k=this%fs%cfg%kmino_+1,this%fs%cfg%kmaxo_
-               do j=this%fs%cfg%jmino_+1,this%fs%cfg%jmaxo_
-                  do i=this%fs%cfg%imino_+1,this%fs%cfg%imaxo_
-                     this%fs%visc(i,j,k)   =this%fs%visc(i,j,k)   +this%sgs%visc(i,j,k)
-                     this%fs%visc_xy(i,j,k)=this%fs%visc_xy(i,j,k)+sum(this%fs%itp_xy(:,:,i,j,k)*this%sgs%visc(i-1:i,j-1:j,k))
-                     this%fs%visc_yz(i,j,k)=this%fs%visc_yz(i,j,k)+sum(this%fs%itp_yz(:,:,i,j,k)*this%sgs%visc(i,j-1:j,k-1:k))
-                     this%fs%visc_zx(i,j,k)=this%fs%visc_zx(i,j,k)+sum(this%fs%itp_xz(:,:,i,j,k)*this%sgs%visc(i-1:i,j,k-1:k))
-                  end do
-               end do
-            end do
-         end block sgs_modeling
-      end if
+      ! Remember old velocities and sRHOs
+      this%fs%Uold=this%fs%U; this%fs%sRHOxold=this%fs%sRHOx
+      this%fs%Vold=this%fs%V; this%fs%sRHOyold=this%fs%sRHOy
+      this%fs%Wold=this%fs%W; this%fs%sRHOzold=this%fs%sRHOz
       
       ! Perform sub-iterations
       do while (this%time%it.le.this%time%itmax)
+            
+         ! VOF equation ====================================================
+         ! Advance VOF equation
+         this%vf%VF=this%vf%VFold
+         if (this%time%it.eq.this%time%itmax) then   
+            call this%vf%advance(dt=this%time%dt,U=this%fs%Umid,V=this%fs%Vmid,W=this%fs%Wmid)
+         else
+            call this%vf%advance_tmp(dt=this%time%dt,U=this%fs%Umid,V=this%fs%Vmid,W=this%fs%Wmid)
+         end if
          
-         ! Build mid-time velocity
-         this%fs%U=0.5_WP*(this%fs%U+this%fs%Uold)
-         this%fs%V=0.5_WP*(this%fs%V+this%fs%Vold)
-         this%fs%W=0.5_WP*(this%fs%W+this%fs%Wold)
+         ! Update sqrt(face density) and momentum vector
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_density(rho=this%resU)
+         this%fs%rhoU=this%fs%rho_l*this%vf%UFl(1,:,:,:)+this%fs%rho_g*this%vf%UFg(1,:,:,:)
+         this%fs%rhoV=this%fs%rho_l*this%vf%UFl(2,:,:,:)+this%fs%rho_g*this%vf%UFg(2,:,:,:)
+         this%fs%rhoW=this%fs%rho_l*this%vf%UFl(3,:,:,:)+this%fs%rho_g*this%vf%UFg(3,:,:,:)
          
-         ! Preliminary mass and momentum transport step at the interface
-         call this%fs%prepare_advection_upwind(dt=this%time%dt)
+         ! Prepare new staggered viscosity (at n+1)
+         call this%fs%get_viscosity(vf=this%vf,strat=arithmetic_visc)
+
+         ! Turbulence modeling
+         if (this%use_sgs) then
+            sgs_modeling: block
+               use sgsmodel_class, only: vreman
+               integer :: i,j,k
+               this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
+               call this%fs%get_gradu(this%gradU)
+               call this%sgs%get_visc(type=vreman,dt=this%time%dtold,rho=this%resU,gradu=this%gradU)
+               do k=this%fs%cfg%kmino_+1,this%fs%cfg%kmaxo_
+                  do j=this%fs%cfg%jmino_+1,this%fs%cfg%jmaxo_
+                     do i=this%fs%cfg%imino_+1,this%fs%cfg%imaxo_
+                        this%fs%visc(i,j,k)   =this%fs%visc(i,j,k)   +this%sgs%visc(i,j,k)
+                        this%fs%visc_xy(i,j,k)=this%fs%visc_xy(i,j,k)+sum(this%fs%itp_xy(:,:,i,j,k)*this%sgs%visc(i-1:i,j-1:j,k))
+                        this%fs%visc_yz(i,j,k)=this%fs%visc_yz(i,j,k)+sum(this%fs%itp_yz(:,:,i,j,k)*this%sgs%visc(i,j-1:j,k-1:k))
+                        this%fs%visc_zx(i,j,k)=this%fs%visc_zx(i,j,k)+sum(this%fs%itp_xz(:,:,i,j,k)*this%sgs%visc(i-1:i,j,k-1:k))
+                     end do
+                  end do
+               end do
+            end block sgs_modeling
+         end if
          
+         ! Momentum equation ===============================================
          ! Explicit calculation of drho*u/dt from NS
          call this%fs%get_dmomdt(this%resU,this%resV,this%resW)
          
          ! Assemble explicit residual
-         this%resU=-2.0_WP*this%fs%rho_U*this%fs%U+(this%fs%rho_Uold+this%fs%rho_U)*this%fs%Uold+this%time%dt*this%resU
-         this%resV=-2.0_WP*this%fs%rho_V*this%fs%V+(this%fs%rho_Vold+this%fs%rho_V)*this%fs%Vold+this%time%dt*this%resV
-         this%resW=-2.0_WP*this%fs%rho_W*this%fs%W+(this%fs%rho_Wold+this%fs%rho_W)*this%fs%Wold+this%time%dt*this%resW   
+         this%resU=-(this%fs%U*this%fs%sRHOX**2-this%fs%Uold*this%fs%sRHOXold**2)+this%time%dt*this%resU
+         this%resV=-(this%fs%V*this%fs%sRHOY**2-this%fs%Vold*this%fs%sRHOYold**2)+this%time%dt*this%resV
+         this%resW=-(this%fs%W*this%fs%sRHOZ**2-this%fs%Wold*this%fs%sRHOZold**2)+this%time%dt*this%resW
          
-         ! Form implicit residuals and apply residuals
+         ! Form implicit residuals
          call this%fs%solve_implicit(this%time%dt,this%resU,this%resV,this%resW)
-         this%fs%U=2.0_WP*this%fs%U-this%fs%Uold+this%resU
-         this%fs%V=2.0_WP*this%fs%V-this%fs%Vold+this%resV
-         this%fs%W=2.0_WP*this%fs%W-this%fs%Wold+this%resW
          
-         ! Apply other boundary conditions on the resulting fields
+         ! Compute predictor U
+         this%fs%U=this%fs%U+this%resU
+         this%fs%V=this%fs%V+this%resV
+         this%fs%W=this%fs%W+this%resW
+         
+         ! Sync and apply boundary conditions
          call this%fs%apply_bcond(this%time%t,this%time%dt)
+         
+         ! Enforce global conservation wrt Umid
+         call this%fs%correct_mfr()
+         
+         ! Poisson equation ================================================
+         ! Compute predictor Umid
+         this%fs%Umid=(this%fs%sRHOX*this%fs%U*this%fs%theta+this%fs%sRHOXold*this%fs%Uold*(1.0_WP-this%fs%theta))/(this%fs%sRHOX*this%fs%theta+this%fs%sRHOXold*(1.0_WP-this%fs%theta))
+         this%fs%Vmid=(this%fs%sRHOY*this%fs%V*this%fs%theta+this%fs%sRHOYold*this%fs%Vold*(1.0_WP-this%fs%theta))/(this%fs%sRHOY*this%fs%theta+this%fs%sRHOYold*(1.0_WP-this%fs%theta))
+         this%fs%Wmid=(this%fs%sRHOZ*this%fs%W*this%fs%theta+this%fs%sRHOZold*this%fs%Wold*(1.0_WP-this%fs%theta))/(this%fs%sRHOZ*this%fs%theta+this%fs%sRHOZold*(1.0_WP-this%fs%theta))
          
          ! Solve Poisson equation
          call this%fs%update_laplacian()
-         call this%fs%correct_mfr()
          call this%fs%get_div()
          call this%fs%add_surface_tension_jump(dt=this%time%dt,div=this%fs%div,vf=this%vf)
          this%fs%psolv%rhs=-this%fs%cfg%vol*this%fs%div/this%time%dt
@@ -675,20 +716,24 @@ contains
          call this%fs%psolv%solve()
          call this%fs%shift_p(this%fs%psolv%sol)
          
-         ! Correct velocity
+         ! Correct pressure, U, and Umid
          call this%fs%get_pgrad(this%fs%psolv%sol,this%resU,this%resV,this%resW)
          this%fs%P=this%fs%P+this%fs%psolv%sol
-         this%fs%U=this%fs%U-this%time%dt*this%resU/this%fs%rho_U
-         this%fs%V=this%fs%V-this%time%dt*this%resV/this%fs%rho_V
-         this%fs%W=this%fs%W-this%time%dt*this%resW/this%fs%rho_W
+         this%fs%U=this%fs%U-this%time%dt*this%resU/(this%fs%sRHOX**2)
+         this%fs%V=this%fs%V-this%time%dt*this%resV/(this%fs%sRHOY**2)
+         this%fs%W=this%fs%W-this%time%dt*this%resW/(this%fs%sRHOZ**2)
+         this%fs%Umid=this%fs%Umid-this%time%dt*this%resU/((this%fs%sRHOX+this%fs%sRHOXold*(1.0_WP-this%fs%theta)/this%fs%theta)*this%fs%sRHOX)
+         this%fs%Vmid=this%fs%Vmid-this%time%dt*this%resV/((this%fs%sRHOY+this%fs%sRHOYold*(1.0_WP-this%fs%theta)/this%fs%theta)*this%fs%sRHOY)
+         this%fs%Wmid=this%fs%Wmid-this%time%dt*this%resW/((this%fs%sRHOZ+this%fs%sRHOZold*(1.0_WP-this%fs%theta)/this%fs%theta)*this%fs%sRHOZ)
          
-         ! Increment sub-iteration counter
+         ! Increment sub-iteration counter =================================
          this%time%it=this%time%it+1
          
       end do
+
       
       ! Recompute interpolated velocity and divergence
-      call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
+      call this%fs%interp_velmid(this%Ui,this%Vi,this%Wi)
       call this%fs%get_div()
       
       ! Remove VOF at edge of domain
@@ -696,6 +741,7 @@ contains
          use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
          use parallel, only: MPI_REAL_WP
          integer :: n,i,j,k,ierr
+         ! Adjust VOF field
          this%vof_removed=0.0_WP
          do n=1,this%vof_removal_layer%no_
             i=this%vof_removal_layer%map(1,n)
@@ -706,6 +752,9 @@ contains
          end do
          call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_removed,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
          call this%vf%clean_irl_and_band()
+         ! Also adjust density
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
+         call this%fs%update_density(rho=this%resU)
       end block remove_vof
       
       ! Output to ensight
@@ -745,19 +794,22 @@ contains
             ! Prefix for files
             write(timestamp,'(es12.5)') this%time%t
             ! Populate df and write it
-            call this%df%push(name='t'  ,val=this%time%t )
-            call this%df%push(name='dt' ,val=this%time%dt)
-            call this%df%push(name='U'  ,var=this%fs%U   )
-            call this%df%push(name='V'  ,var=this%fs%V   )
-            call this%df%push(name='W'  ,var=this%fs%W   )
-            call this%df%push(name='P'  ,var=this%fs%P   )
-            call this%df%push(name='Pjx',var=this%fs%Pjx )
-            call this%df%push(name='Pjy',var=this%fs%Pjy )
-            call this%df%push(name='Pjz',var=this%fs%Pjz )
-            call this%df%push(name='P11',var=P11         )
-            call this%df%push(name='P12',var=P12         )
-            call this%df%push(name='P13',var=P13         )
-            call this%df%push(name='P14',var=P14         )
+            call this%df%push(name='t'   ,val=this%time%t )
+            call this%df%push(name='dt'  ,val=this%time%dt)
+            call this%df%push(name='U'   ,var=this%fs%U   )
+            call this%df%push(name='V'   ,var=this%fs%V   )
+            call this%df%push(name='W'   ,var=this%fs%W   )
+            call this%df%push(name='Umid',var=this%fs%Umid)
+            call this%df%push(name='Vmid',var=this%fs%Vmid)
+            call this%df%push(name='Wmid',var=this%fs%Wmid)
+            call this%df%push(name='P'   ,var=this%fs%P   )
+            call this%df%push(name='Pjx' ,var=this%fs%Pjx )
+            call this%df%push(name='Pjy' ,var=this%fs%Pjy )
+            call this%df%push(name='Pjz' ,var=this%fs%Pjz )
+            call this%df%push(name='P11' ,var=P11         )
+            call this%df%push(name='P12' ,var=P12         )
+            call this%df%push(name='P13' ,var=P13         )
+            call this%df%push(name='P14' ,var=P14         )
             call this%df%write(fdata='restart/jet_'//trim(adjustl(timestamp)))
             ! Deallocate
             deallocate(P11,P12,P13,P14)
