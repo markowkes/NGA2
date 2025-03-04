@@ -29,7 +29,7 @@ Use SGS model : .true.
 
 # Restart handling
 Restart output period : 1e-2
-Restart from : !restart/jet_1.00050E+01
+Restart from : !restart/jet_5.00047E-02
 
 # Ensight output
 Ensight output period : 1e-3

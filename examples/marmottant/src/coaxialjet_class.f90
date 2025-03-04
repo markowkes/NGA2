@@ -598,6 +598,7 @@ contains
    
    !> Take one time step
    subroutine step(this)
+      use tpns_class, only: arithmetic_visc
       implicit none
       class(coaxialjet), intent(inout) :: this
       
@@ -621,7 +622,7 @@ contains
       call this%vf%advance(dt=this%time%dt,U=this%fs%U,V=this%fs%V,W=this%fs%W)
       
       ! Prepare new staggered viscosity (at n+1)
-      call this%fs%get_viscosity(vf=this%vf)
+      call this%fs%get_viscosity(vf=this%vf,strat=arithmetic_visc)
       
       ! Turbulence modeling
       if (this%use_sgs) then
