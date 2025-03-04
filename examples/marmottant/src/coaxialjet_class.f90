@@ -296,6 +296,9 @@ contains
       ! Initialize our velocity field
       initialize_velocity: block
          use tpns_class, only: bcond
+         use string,     only: str_long
+         use messager,   only: log
+         character(str_long) :: message
          type(bcond), pointer :: mybc
          integer :: n,i,j,k
          real(WP) :: r
@@ -308,6 +311,9 @@ contains
          call param_read('Liquid velocity',this%Ul)
          ! Compute gas vorticity thickness from Marmottant's correlation
          this%dg=this%Hg*5.6_WP*(this%fs%rho_g*this%Ug*this%Hg/this%fs%visc_g)**(-0.5_WP)
+         if (this%fs%cfg%amRoot) then
+            write(message,'("[Gas vorticity thickness] => dg =",es12.5)') this%dg; call log(message)
+         end if
          ! Apply inflow velocity profile
          call this%fs%get_bcond('inflow',mybc)
          do n=1,mybc%itr%no_
@@ -317,7 +323,7 @@ contains
             ! Set liquid Poiseuille profile
             if (r.le.0.5_WP*this%Dl) this%fs%U(i,j,k)=2.0_WP*this%Ul*(1.0_WP-r/(0.5_WP*this%Dl))**2
             ! Set gas profile
-            if (r.ge.0.5_WP*this%Dl+this%lip.and.r.le.0.5_WP*this%Dl+this%lip+this%Hg) this%fs%U(i,j,k)=this%Ug*erf((r-0.5_WP*this%Dl+this%lip)/this%dg)*erf((0.5_WP*this%Dl+this%lip+this%Hg-r)/this%dg)
+            if (r.ge.0.5_WP*this%Dl+this%lip.and.r.le.0.5_WP*this%Dl+this%lip+this%Hg) this%fs%U(i,j,k)=this%Ug*erf((r-(0.5_WP*this%Dl+this%lip))/this%dg)*erf(((0.5_WP*this%Dl+this%lip+this%Hg)-r)/this%dg)
          end do
          ! Apply all other boundary conditions
          call this%fs%apply_bcond(this%time%t,this%time%dt)
