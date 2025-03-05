@@ -359,10 +359,13 @@ contains
          use string,                only: str_medium
          use filesys,               only: makedir,isdir
          use irl_fortran_interface, only: setNumberOfPlanes,setPlane
+         use tpns_class,            only: bcond
          character(len=str_medium) :: filename
          integer, dimension(3) :: iopartition
          real(WP), dimension(:,:,:), allocatable :: P11,P12,P13,P14
-         integer :: i,j,k
+         integer :: i,j,k,n
+         type(bcond), pointer :: mybc
+         real(WP) :: r
          ! Create event for saving restart files
          this%save_evt=event(this%time,'Restart output')
          call param_read('Restart output period',this%save_evt%tper)
@@ -405,9 +408,6 @@ contains
             ! Recalculate density
             this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
             call this%fs%update_density(rho=this%resU)
-            this%fs%sRHOxold=this%fs%sRHOx
-            this%fs%sRHOyold=this%fs%sRHOy
-            this%fs%sRHOzold=this%fs%sRHOz
             ! Now read in the velocity solver data
             call this%df%pull(name='U',var=this%fs%U)
             call this%df%pull(name='V',var=this%fs%V)
@@ -419,6 +419,17 @@ contains
             call this%df%pull(name='Pjx',var=this%fs%Pjx)
             call this%df%pull(name='Pjy',var=this%fs%Pjy)
             call this%df%pull(name='Pjz',var=this%fs%Pjz)
+            ! Re-apply inflow velocity profile
+            call this%fs%get_bcond('inflow',mybc)
+            do n=1,mybc%itr%no_
+               i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
+               ! Compute radius
+               r=sqrt(this%cfg%ym(j)**2+this%cfg%zm(k)**2)
+               ! Set liquid Poiseuille profile
+               if (r.le.0.5_WP*this%Dl) this%fs%U(i,j,k)=2.0_WP*this%Ul*(1.0_WP-r/(0.5_WP*this%Dl))**2
+               ! Set gas profile
+               if (r.ge.0.5_WP*this%Dl+this%lip.and.r.le.0.5_WP*this%Dl+this%lip+this%Hg) this%fs%U(i,j,k)=this%Ug*erf((r-(0.5_WP*this%Dl+this%lip))/this%dg)*erf(((0.5_WP*this%Dl+this%lip+this%Hg)-r)/this%dg)
+            end do
             ! Apply all other boundary conditions
             call this%fs%apply_bcond(this%time%t,this%time%dt)
             ! Adjust MFR for global mass balance
