@@ -2204,7 +2204,7 @@ contains
       call this%cfg%sync(this%Umid)
       call this%cfg%sync(this%Vmid)
       call this%cfg%sync(this%Wmid)
-
+      
    end subroutine correct_mfr
    
    

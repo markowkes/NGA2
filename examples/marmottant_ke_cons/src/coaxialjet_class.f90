@@ -650,15 +650,15 @@ contains
          
          ! Prepare new staggered viscosity (at n+1)
          call this%fs%get_viscosity(vf=this%vf,strat=arithmetic_visc)
-
+         
          ! Turbulence modeling
          if (this%use_sgs) then
             sgs_modeling: block
                use sgsmodel_class, only: vreman
                integer :: i,j,k
                this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
-               call this%fs%get_gradu(this%gradU)
-               call this%sgs%get_visc(type=vreman,dt=this%time%dtold,rho=this%resU,gradu=this%gradU)
+               call this%fs%get_gradUmid(this%gradU)
+               call this%sgs%get_visc(type=vreman,dt=this%time%dt,rho=this%resU,gradu=this%gradU)
                do k=this%fs%cfg%kmino_+1,this%fs%cfg%kmaxo_
                   do j=this%fs%cfg%jmino_+1,this%fs%cfg%jmaxo_
                      do i=this%fs%cfg%imino_+1,this%fs%cfg%imaxo_
@@ -720,7 +720,6 @@ contains
          this%time%it=this%time%it+1
          
       end do
-
       
       ! Recompute interpolated velocity and divergence
       call this%fs%interp_vel(this%Ui,this%Vi,this%Wi)
@@ -743,8 +742,7 @@ contains
          call MPI_ALLREDUCE(MPI_IN_PLACE,this%vof_removed,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
          call this%vf%clean_irl_and_band()
          ! Also adjust density
-         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF)
-         call this%fs%update_density(rho=this%resU)
+         this%resU=this%fs%rho_l*this%vf%VF+this%fs%rho_g*(1.0_WP-this%vf%VF); call this%fs%update_density(rho=this%resU)
       end block remove_vof
       
       ! Output to ensight
