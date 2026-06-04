@@ -151,6 +151,12 @@ contains
       call this%pcg_p%initialize(amr,name='pcg_p',ncomp=1,ng=1,interp=interp_none)
       call this%pcg_q%initialize(amr,name='pcg_q',ncomp=1,ng=1,interp=interp_none)
 
+      ! Register PCG work amrdata
+      call this%pcg_r%register()
+      call this%pcg_z%register()
+      call this%pcg_p%register()
+      call this%pcg_q%register()
+
       ! Log setup info
       if (type .eq. amrmg_cstcoef) then
          call log('[amrmg] Initialized constant-coefficient solver')
@@ -234,15 +240,15 @@ contains
          end block varcoef_setup
       end select
 
-      ! PCG work arrays: only allocate if using PCG outer solver
-      if (this%outer_solver.eq.amrmg_outer_pcg_mlmg) then
-         do lev=0,this%amr%clvl()
-            call this%pcg_r%reset_level(lev,ba(lev),dm(lev))
-            call this%pcg_z%reset_level(lev,ba(lev),dm(lev))
-            call this%pcg_p%reset_level(lev,ba(lev),dm(lev))
-            call this%pcg_q%reset_level(lev,ba(lev),dm(lev))
-         end do
-      end if
+      ! ! PCG work arrays: only allocate if using PCG outer solver
+      ! if (this%outer_solver.eq.amrmg_outer_pcg_mlmg) then
+      !    do lev=0,this%amr%clvl()
+      !       call this%pcg_r%reset_level(lev,ba(lev),dm(lev))
+      !       call this%pcg_z%reset_level(lev,ba(lev),dm(lev))
+      !       call this%pcg_p%reset_level(lev,ba(lev),dm(lev))
+      !       call this%pcg_q%reset_level(lev,ba(lev),dm(lev))
+      !    end do
+      ! end if
 
       this%setup_done = .true.
    end subroutine setup
