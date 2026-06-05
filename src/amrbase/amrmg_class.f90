@@ -151,12 +151,6 @@ contains
       call this%pcg_p%initialize(amr,name='pcg_p',ncomp=1,ng=1,interp=interp_none)
       call this%pcg_q%initialize(amr,name='pcg_q',ncomp=1,ng=1,interp=interp_none)
 
-      ! ! Register PCG work amrdata
-      ! call this%pcg_r%register()
-      ! call this%pcg_z%register()
-      ! call this%pcg_p%register()
-      ! call this%pcg_q%register()
-
       ! Log setup info
       if (type .eq. amrmg_cstcoef) then
          call log('[amrmg] Initialized constant-coefficient solver')
