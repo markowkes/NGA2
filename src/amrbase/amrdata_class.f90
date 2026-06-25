@@ -1129,7 +1129,7 @@ contains
 
          nrm = fld%norm0(lev)
 
-         write(*,'(A,I2,A,ES12.4)') trim(name)//" level ", lev, " norm0=", nrm
+         if (fld%amr%amRoot) write(*,'(A,I2,A,ES12.4)') trim(name)//" level ", lev, " norm0=", nrm
 
          if (.not. ieee_is_finite(nrm)) then
             call die(trim(name)//": NaN/Inf on level")
