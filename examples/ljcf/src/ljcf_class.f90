@@ -20,6 +20,8 @@ module ljcf_class
    private
    
    public :: ljcf
+
+   integer :: ierr
    
    !> ljcf object
    type :: ljcf
@@ -43,6 +45,7 @@ module ljcf_class
       !> Simulation monitor file
       type(monitor) :: mfile    !< General simulation monitoring
       type(monitor) :: cflfile  !< CFL monitoring
+      type(monitor) :: ljcf_file     !< LJCF simulation monitoring
       
       !> Work arrays
       real(WP), dimension(:,:,:), allocatable :: resU,resV,resW      !< Residuals
@@ -69,7 +72,7 @@ module ljcf_class
       real(WP) :: djet, Vjet
       real(WP), dimension(:), allocatable :: xjet
       integer :: relax_model, nwall
-      real(WP) :: gravity, liqVol, liqVolInjected
+      real(WP) :: gravity, liqVol, liqVolInjected, InjectionVelocity
       
    contains
       procedure :: init     !< Initialize nozzle simulation
@@ -486,7 +489,6 @@ contains
          call this%mfile%add_column(this%fs%Vmax,'Vmax')
          call this%mfile%add_column(this%fs%Wmax,'Wmax')
          call this%mfile%add_column(this%fs%Pmax,'Pmax')
-         call this%mfile%add_column(this%liqVolInjected,'Liq Vol Injected')
          call this%mfile%add_column(this%vf%VFint,'VOF integral')
          call this%mfile%add_column(this%vf%SDint,'SD integral')
          call this%mfile%add_column(this%vof_removed,'VOF removed')
@@ -508,6 +510,13 @@ contains
          call this%cflfile%add_column(this%fs%CFLv_y,'Viscous yCFL')
          call this%cflfile%add_column(this%fs%CFLv_z,'Viscous zCFL')
          call this%cflfile%write()
+         ! Create LJCF monitor
+         this%ljcf_file=monitor(this%fs%cfg%amRoot,'ljcf')
+         call this%ljcf_file%add_column(this%time%n,'Timestep number')
+         call this%ljcf_file%add_column(this%time%t,'Time')
+         call this%ljcf_file%add_column(this%liqVolInjected,'Liq Vol Injected')
+         call this%ljcf_file%add_column(this%InjectionVelocity,'Injection Velocity')
+         call this%ljcf_file%write()
       end block create_monitor
       
       
@@ -635,18 +644,28 @@ contains
       ! Apply jet velocity
       apply_bc: block
          use tpns_class, only: bcond
+         use mpi_f08,  only: MPI_ALLREDUCE,MPI_SUM,MPI_IN_PLACE
+         use parallel, only: MPI_REAL_WP
          type(bcond), pointer :: mybc
+         real(WP) :: liqVolInjected_dt
          integer :: n,i,j,k
+         ! Compute injection velocity
+         if (this%liqVolInjected .lt. this%liqVol) then
+            this%InjectionVelocity=this%gravity*this%time%t  ! Velocity increases linearly with time
+         else
+            this%InjectionVelocity=0.0_WP                    ! Velocity stops once volume is reached
+         end if
+         ! Apply injection velocity to the jet boundary condition 
          call this%fs%get_bcond('jet',mybc)
+         liqVolInjected_dt = 0.0_WP
          do n=1,mybc%itr%no_
             i=mybc%itr%map(1,n); j=mybc%itr%map(2,n); k=mybc%itr%map(3,n)
-            if (this%liqVolInjected .lt. this%liqVol) then
-               this%fs%V(i,j,k)=this%gravity*this%time%t  ! Velocity increases linearly with time
-            else
-               this%fs%V(i,j,k)=0.0_WP                    ! Velocity stops once volume is reached
-            end if
-            this%liqVolInjected = this%liqVolInjected + this%fs%V(i,j,k)*this%vf%VF(i,j-1,k)*this%cfg%dx(i)*this%cfg%dz(k)*this%time%dt
+            
+            this%fs%V(i,j,k) = this%InjectionVelocity
+            liqVolInjected_dt = liqVolInjected_dt + this%fs%V(i,j,k)*this%vf%VF(i,j-1,k)*this%cfg%dx(i)*this%cfg%dz(k)*this%time%dt
          end do
+         call MPI_ALLREDUCE(MPI_IN_PLACE,liqVolInjected_dt,1,MPI_REAL_WP,MPI_SUM,this%cfg%comm,ierr)
+         this%liqVolInjected = this%liqVolInjected + liqVolInjected_dt
       end block apply_bc
 
       ! Remember old VOF
@@ -684,6 +703,9 @@ contains
 
          ! Explicit calculation of drho*u/dt from NS
          call this%fs%get_dmomdt(this%resU,this%resV,this%resW)
+
+         ! Add momentum source terms
+         call this%fs%addsrc_gravity(this%resU,this%resV,this%resW)
          
          ! Assemble explicit residual
          this%resU=-2.0_WP*this%fs%rho_U*this%fs%U+(this%fs%rho_Uold+this%fs%rho_U)*this%fs%Uold+this%time%dt*this%resU
@@ -792,6 +814,7 @@ contains
       call this%mfile%write()
       call this%cflfile%write()
       call this%timefile%write()
+      call this%ljcf_file%write()
       
       ! Finally, see if it's time to save restart files
       if (this%save_evt%occurs()) then

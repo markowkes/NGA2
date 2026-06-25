@@ -8,6 +8,7 @@ module simulation
    use amrdata_class,     only: amrdata
    use timetracker_class, only: timetracker
    use event_class,       only: event
+   use amrcclabel_class,  only: amrcclabel,stats_type
    use monitor_class,     only: monitor
    use messager,          only: log
    use amrio_class,       only: amrio
@@ -34,6 +35,12 @@ module simulation
    ! Regrid parameters
    type(event) :: regrid_evt
    real(WP) :: Re_tag=huge(1.0_WP)
+
+   ! CCLabel
+   type(event) :: cclabel_evt
+   type(amrcclabel) :: cclabel
+   type(stats_type), dimension(:), allocatable :: stats 
+   type(monitor) :: cclabel_file 
 
    ! Monitoring
    type(monitor) :: mfile,cflfile,gridfile
@@ -369,6 +376,98 @@ contains
       call amrex_mfiter_destroy(mfi)
    end subroutine jet_init
 
+   !> Function that identifies cells within a structure
+   logical function make_label(pVF,i,j,k)
+      implicit none
+      real(WP), dimension(:,:,:,:), intent(in), pointer :: pVF
+      integer, intent(in) :: i,j,k
+      if (pVF(i,j,k,1).gt.0.0_WP) then
+         make_label=.true.
+      else
+         make_label=.false.
+      end if
+   end function make_label
+
+   !> Function that identifies if neighbors are within the same structure
+   logical function same_label(pVF,i,j,k,ii,jj,kk)
+      implicit none
+      real(WP), dimension(:,:,:,:), intent(in), pointer :: pVF
+      integer, intent(in) :: i,j,k,ii,jj,kk
+      if (pVF(i,j,k,1).gt.0.0_WP .and. pVF(ii,jj,kk,1).gt.0.0_WP) then
+         same_label=.true.
+      else
+         same_label=.false.
+      end if
+   end function same_label
+
+   !> Function that identifies cells within a structure on coarse level
+   logical function coarse_make_label(pVF,i,j,k)
+      use amrmpinc_class,   only: VFhi
+      implicit none
+      real(WP), dimension(:,:,:,:), intent(in), pointer :: pVF
+      integer, intent(in) :: i,j,k
+      if (pVF(i,j,k,1).gt.VFhi) then
+         coarse_make_label=.true.
+      else
+         coarse_make_label=.false.
+      end if
+   end function coarse_make_label
+
+   !> Function that identifies if neighbors are within the same structure on coarse level
+   logical function coarse_same_label(pVF,i,j,k,ii,jj,kk)
+      use amrmpinc_class,   only: VFhi
+      implicit none
+      real(WP), dimension(:,:,:,:), intent(in), pointer :: pVF
+      integer, intent(in) :: i,j,k,ii,jj,kk
+      if (pVF(i,j,k,1).gt.VFhi .and. pVF(ii,jj,kk,1).gt.VFhi) then
+         coarse_same_label=.true.
+      else
+         coarse_same_label=.false.
+      end if
+   end function coarse_same_label
+
+   !> Write droplet statistics to monitor files
+   subroutine write_stats()
+      use monitor_class, only: iformat,rformat
+      use string,    only: str_medium
+      implicit none
+      character(len=str_medium) :: filename,struct_name
+      type(stats_type) :: buf   ! single-structure buffer monitor points into
+      integer :: n
+      ! Create a file to write Weber numbers
+      write(filename, rformat) time%t
+      filename = 'structStats_'//trim(adjustl(filename))
+      cclabel_file=monitor(fs%amr%amRoot,filename)
+      
+      ! Register columns with buffer
+      call cclabel_file%add_column(buf%id,      'Structure ID')
+      call cclabel_file%add_column(buf%vol,     'Drop Volume')
+      call cclabel_file%add_column(buf%Deq,     'Equiv Diameter')
+      call cclabel_file%add_column(buf%com(1),  'X Drop Pos')
+      call cclabel_file%add_column(buf%com(2),  'Y Drop Pos')
+      call cclabel_file%add_column(buf%com(3),  'Z Drop Pos')
+      call cclabel_file%add_column(buf%vel(1),  'X Drop Vel')
+      call cclabel_file%add_column(buf%vel(2),  'Y Drop Vel')
+      call cclabel_file%add_column(buf%vel(3),  'Z Drop Vel')
+      call cclabel_file%add_column(buf%gvel(1), 'X Gas Vel')
+      call cclabel_file%add_column(buf%gvel(2), 'Y Gas Vel')
+      call cclabel_file%add_column(buf%gvel(3), 'Z Gas Vel')
+      call cclabel_file%add_column(buf%moi(1,1),'Ixx')
+      call cclabel_file%add_column(buf%moi(2,2),'Iyy')
+      call cclabel_file%add_column(buf%moi(3,3),'Izz')
+      call cclabel_file%add_column(buf%moi(1,2),'Ixy')
+      call cclabel_file%add_column(buf%moi(1,3),'Ixz')
+      call cclabel_file%add_column(buf%moi(2,3),'Iyz')
+      call cclabel_file%add_column(buf%weber,   'Weber')
+      do n=1,cclabel%nstruct
+         ! Set buffer and write the data for this structure
+         buf = stats(n)
+         call cclabel_file%write()
+      end do
+      ! Close file
+      call cclabel_file%close()
+   end subroutine write_stats
+
    !> Initialization hook
    subroutine simulation_init()
       use param, only: param_read
@@ -520,6 +619,18 @@ contains
          call io%add_scalar(name='dt',value=time%dt)
       end block init_checkpoint
 
+      ! Initialize CClabel
+      cclabel_evt=event(time=time,name="CCLabel output")
+      call param_read('CCLabel period',cclabel_evt%tper)
+      call cclabel%initialize(amr,name='amr_ljcf')
+      cclabel%make_label        => make_label
+      cclabel%coarse_make_label => coarse_make_label
+      cclabel%same_label        => same_label
+      cclabel%coarse_same_label => coarse_same_label
+      call cclabel%build(fs%VF) 
+      call cclabel%compute_stats(fs%VF, fs%Q, fs%rhoG, fs%sigma, stats)
+      call write_stats()
+
       ! Initialize visualization
       create_visualization: block
          ! Create visualization object
@@ -531,6 +642,7 @@ contains
          call viz%add_scalar(fs%visc,1,'visc')
          call viz%add_scalar(fs%P,1,'pressure')
          call viz%add_scalar(fs%VF,1,'VF')
+         call viz%add_scalar(cclabel%id,1,'ID')
          call viz%add_surfmesh(fs%smesh,'plic')
          ! Create visualization output event
          viz_evt=event(time=time,name='Visualization output')
@@ -674,6 +786,13 @@ contains
 
          ! Compute Umag
          call Umag%get_magnitude(srcX=fs%Q,srcY=fs%Q,srcZ=fs%Q,compX=1,compY=2,compZ=3)
+
+         ! Construct CCLabel then compute & write stats
+         if (cclabel_evt%occurs()) then 
+            call cclabel%build(fs%VF)
+            call cclabel%compute_stats(fs%VF, fs%Q, fs%rhoG, fs%sigma, stats)
+            call write_stats()
+         end if
 
          ! Monitor output
          call fs%get_info()
