@@ -11,7 +11,7 @@ module amrdata_class
    implicit none
    private
 
-   public :: amrdata,amrdata_fillbc,default_fillbc
+   public :: amrdata,amrdata_fillbc,default_fillbc,check_amrdata
 
    ! Generic interpolation modes
    integer, parameter, public :: interp_none      =-1                         !< Workspace: allocate but don't fill
@@ -1109,5 +1109,38 @@ contains
          l0 = 0; l1 = this%amr%clvl()
       end if
    end subroutine get_level_range
+
+   subroutine check_amrdata(name, fld)
+      use ieee_arithmetic
+      use messager, only : die
+      implicit none
+
+      character(*), intent(in) :: name
+      type(amrdata), intent(in) :: fld
+
+      integer :: lev
+      real(WP) :: nrm
+
+      do lev = 0, fld%amr%maxlvl
+
+         if (.not. allocated(fld%mf)) then
+            call die(trim(name)//": mf not allocated")
+         endif
+
+         nrm = fld%norm0(lev)
+
+         write(*,'(A,I2,A,ES12.4)') trim(name)//" level ", lev, " norm0=", nrm
+
+         if (.not. ieee_is_finite(nrm)) then
+            call die(trim(name)//": NaN/Inf on level")
+         endif
+
+         if (nrm > huge(1.0_WP)/100.0_WP) then
+            call die(trim(name)//": absurdly large value")
+         endif
+
+      end do
+
+   end subroutine
 
 end module amrdata_class

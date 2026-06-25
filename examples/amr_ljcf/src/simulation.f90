@@ -704,6 +704,7 @@ contains
 
    !> Run the simulation
    subroutine simulation_run()
+      use amrdata_class, only : check_amrdata
       implicit none
 
       ! Time integration loop
@@ -726,10 +727,17 @@ contains
             call fs%V%lincomb(a=0.5_WP,src1=fs%Vold,b=0.5_WP,src2=fs%V)
             call fs%W%lincomb(a=0.5_WP,src1=fs%Wold,b=0.5_WP,src2=fs%W)
 
+            call check_amrdata("Q mid-time", fs%Q)
+            call check_amrdata("U mid-time", fs%U)
+            call check_amrdata("V mid-time", fs%V)
+            call check_amrdata("W mid-time", fs%W)
+
             ! Increment velocity with advection+viscous terms
             call fs%get_dQdt(dQdt=dQdt,dt=time%dt,time=time%t)
             call fs%Q%lincomb(a=1.0_WP,src1=fs%Qold,b=time%dt,src2=dQdt)
             call fs%Q%average_down(); call fs%Q%fill(time%t)
+
+            call check_amrdata("Q after increment velocity", fs%Q)
 
             ! Rebuild PLIC and sub-cell VF
             call fs%build_plic(time%t)
@@ -741,33 +749,72 @@ contains
             ! Interpolate velocity to the faces
             call fs%get_face_velocity()
 
+            call check_amrdata("U face velocity", fs%U)
+            call check_amrdata("V face velocity", fs%V)
+            call check_amrdata("W face velocity", fs%W)
+
             ! Increment both velocities with current pressure term
             call fs%add_pressure(scale=time%dt,phi=fs%P,gravity=gravity)
+
+            call check_amrdata("Q after current pressure", fs%Q)
+            call check_amrdata("U after current pressure", fs%U)
+            call check_amrdata("V after current pressure", fs%V)
+            call check_amrdata("W after current pressure", fs%W)
 
             ! Add surface tension to both velocities
             call fs%add_surface_tension(scale=time%dt)
 
+            call check_amrdata("Q after surface tension", fs%Q)
+            call check_amrdata("U after surface tension", fs%U)
+            call check_amrdata("V after surface tension", fs%V)
+            call check_amrdata("W after surface tension", fs%W)
+
             ! Average down and fill ghosts
             call fs%Q%average_down(); call fs%Q%fill(time=time%t)
             call fs%average_down_velocity(); call fs%fill_velocity(time=time%t)
+
+            call check_amrdata("Q average down", fs%Q)
+            call check_amrdata("U average down", fs%U)
+            call check_amrdata("V average down", fs%V)
+            call check_amrdata("W average down", fs%W)
 
             ! Correct outflow for mass conservation
             call fs%correct_outflow()
 
+            call check_amrdata("Q ourflow", fs%Q)
+            call check_amrdata("U ourflow", fs%U)
+            call check_amrdata("V ourflow", fs%V)
+            call check_amrdata("W ourflow", fs%W)
+
             ! Prepare and solve pressure Poisson
             call fs%get_div(); call fs%div%mult(val=1.0_WP/time%dt)
+            call check_amrdata("div", fs%div)
             call fs%prepare_psolver()
             call fs%psolver%solve(rhs=fs%div)
+
+            call check_amrdata("pressure", fs%P)
 
             ! Correct both velocities with pressure increment
             call fs%add_pressure(scale=time%dt)
 
+            call check_amrdata("Q after pressure increment", fs%Q)
+            call check_amrdata("U after pressure increment", fs%U)
+            call check_amrdata("V after pressure increment", fs%V)
+            call check_amrdata("W after pressure increment", fs%W)
+
             ! Add pressure increment
             call fs%P%add(src=fs%psolver%sol)
+
+            call check_amrdata("P after increment", fs%P)
 
             ! Average down and fill ghosts
             call fs%Q%average_down(); call fs%Q%fill(time=time%t)
             call fs%average_down_velocity(); call fs%fill_velocity(time=time%t)
+
+            call check_amrdata("Q final average down", fs%Q)
+            call check_amrdata("U final average down", fs%U)
+            call check_amrdata("V final average down", fs%V)
+            call check_amrdata("W final average down", fs%W)
 
             ! Increment sub-iteration counter
             time%it=time%it+1
