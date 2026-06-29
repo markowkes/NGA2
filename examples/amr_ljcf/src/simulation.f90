@@ -529,7 +529,7 @@ contains
          use amrex_amr_module, only: amrex_bc_ext_dir,amrex_bc_foextrap
          use amrdata_class,    only: interp_face_lin
          use amrmpinc_class,   only: BC_GAS,BC_USER
-         use amrmg_class,      only: amrmg_outer_pcg_mlmg
+         use amrmg_class,      only: amrmg_outer_pcg_mlmg,amrmg_outer_mlmg
          ! Create flow solver
          call fs%initialize(amr,name='jet')
          ! Set initial conditions
@@ -552,7 +552,7 @@ contains
          call param_read('Sponge thickness',L_spg,default=4.0_WP)
          call param_read('Sponge max CFL',max_cfl_spg,default=0.5_WP)
          ! Set pressure convergence
-         fs%psolver%outer_solver=amrmg_outer_pcg_mlmg
+         fs%psolver%outer_solver=amrmg_outer_mlmg !amrmg_outer_pcg_mlmg
          fs%psolver%tol_rel=1.0e-5_WP
          ! Dirichlet conditions for VOF at x- inlet and pure gas at y- inlet
          fs%lo_bc(1:2)=[BC_USER,BC_GAS]
