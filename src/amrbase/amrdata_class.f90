@@ -11,7 +11,7 @@ module amrdata_class
    implicit none
    private
 
-   public :: amrdata,amrdata_fillbc,default_fillbc,check_amrdata
+   public :: amrdata,amrdata_fillbc,default_fillbc,check_amrdata,check_mf
 
    ! Generic interpolation modes
    integer, parameter, public :: interp_none      =-1                         !< Workspace: allocate but don't fill
@@ -1142,5 +1142,45 @@ contains
       end do
 
    end subroutine
+
+   subroutine check_mf(name, mf)
+      use ieee_arithmetic
+      use messager, only: die
+      implicit none
+
+      character(*), intent(in) :: name
+      type(amrex_multifab), intent(in) :: mf
+
+      integer :: ic
+      real(WP) :: xmin, xmax, xnorm
+
+      write(*,'(/,"Checking ",A)') trim(name)
+
+      do ic = 1, mf%ncomp()
+
+         xmin  = mf%min(ic)
+         xmax  = mf%max(ic)
+         xnorm = mf%norm0(ic)
+
+         write(*,'("  comp ",I2,": min=",ES12.4," max=",ES12.4," norm0=",ES12.4)') &
+            ic, xmin, xmax, xnorm
+
+         if (.not. ieee_is_finite(xmin)) then
+            call die(trim(name)//": min is not finite")
+         endif
+
+         if (.not. ieee_is_finite(xmax)) then
+            call die(trim(name)//": max is not finite")
+         endif
+
+         if (.not. ieee_is_finite(xnorm)) then
+            call die(trim(name)//": norm0 is not finite")
+         endif
+
+      end do
+
+      write(*,'("Finished ",A)') trim(name)
+
+   end subroutine 
 
 end module amrdata_class

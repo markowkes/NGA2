@@ -289,6 +289,7 @@ contains
             use amrex_interface, only: amrmlmg_dot_composite
             use iso_c_binding,   only: c_ptr
             use amrdata_class,   only: interp_none
+            use amrdata_class,   only: check_amrdata,check_mf
             real(WP) :: rho, rho_new, alpha, beta, pq, rnorm, rnorm0, rnorm_prev, pcg_dummy
             integer  :: iter, lev
             type(amrdata) :: pcg_r, pcg_z, pcg_p, pcg_q  !< Per-solve scratch (track current grid)
@@ -345,6 +346,12 @@ contains
                 case (amrmg_cstcoef); call this%poisson%set_level_bc(lev, zmf(lev))
                 case (amrmg_varcoef); call this%abeclap%set_level_bc(lev, zmf(lev))
                end select
+
+               call check_amrdata("1st pcg_r", pcg_r)
+               call check_amrdata("1st pcg_z", pcg_z)
+               call check_amrdata("1st rhs",   rhs)
+               call check_amrdata("1st sol",   this%sol)
+               
             end do
             pcg_dummy = this%multigrid%solve(zmf, resmf, 0.0_WP, 0.0_WP)
 
@@ -406,7 +413,11 @@ contains
                       case (amrmg_varcoef); call this%abeclap%set_level_bc(lev, zmf(lev))
                      end select
                   end do
-                  pcg_dummy = this%multigrid%solve(zmf, resmf, 0.0_WP, 0.0_WP)
+                  call check_amrdata("2nd pcg_r", pcg_r)
+                  call check_amrdata("2nd pcg_z", pcg_z)
+                  call check_amrdata("2nd rhs",   rhs)
+                  call check_amrdata("2nd sol",   this%sol)
+                     pcg_dummy = this%multigrid%solve(zmf, resmf, 0.0_WP, 0.0_WP)
 
                   ! --- rho_new = <r, z> ---
                   do lev=0,this%amr%clvl()
