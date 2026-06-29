@@ -259,6 +259,8 @@ contains
 
       ! Set level BCs
       set_bcs: block
+         use amrex_parallel_module, only: amrex_parallel_ioprocessor
+         use amrdata_class, only: check_mf
          integer :: lev
          select case (this%type)
           case (amrmg_cstcoef)
@@ -266,9 +268,22 @@ contains
                call this%poisson%set_level_bc(lev,sol(lev))
             end do
           case (amrmg_varcoef)
-            do lev=0,this%amr%clvl()
-               call this%abeclap%set_level_bc(lev,sol(lev))
+            do lev = 0, this%amr%clvl()
+
+               if (amrex_parallel_ioprocessor()) &
+                  write(*,'("Setting BC level ",I0)') lev
+
+               call this%abeclap%set_level_bc(lev, sol(lev))
+
+               call check_mf("sol", sol(lev))
+               
+               if (amrex_parallel_ioprocessor()) &
+                  write(*,'("Finished BC level ",I0)') lev
+
             end do
+
+            write(*,*) "Calling MLMG solve"
+
          end select
       end block set_bcs
 

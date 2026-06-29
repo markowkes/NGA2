@@ -1146,6 +1146,7 @@ contains
    subroutine check_mf(name, mf)
       use ieee_arithmetic
       use messager, only: die
+      use amrex_parallel_module, only: amrex_parallel_ioprocessor
       implicit none
 
       character(*), intent(in) :: name
@@ -1154,7 +1155,9 @@ contains
       integer :: ic
       real(WP) :: xmin, xmax, xnorm
 
-      write(*,'(/,"Checking ",A)') trim(name)
+      if (amrex_parallel_ioprocessor()) then
+         write(*,'("Checking ",A)') trim(name)
+      endif
 
       do ic = 1, mf%ncomp()
 
@@ -1162,8 +1165,10 @@ contains
          xmax  = mf%max(ic)
          xnorm = mf%norm0(ic)
 
-         write(*,'("  comp ",I2,": min=",ES12.4," max=",ES12.4," norm0=",ES12.4)') &
-            ic, xmin, xmax, xnorm
+         if (amrex_parallel_ioprocessor()) then
+            write(*,'("  comp ",I2,": min=",ES12.4," max=",ES12.4," norm0=",ES12.4)') &
+               ic, xmin, xmax, xnorm
+         endif
 
          if (.not. ieee_is_finite(xmin)) then
             call die(trim(name)//": min is not finite")
@@ -1179,7 +1184,9 @@ contains
 
       end do
 
-      write(*,'("Finished ",A)') trim(name)
+      if (amrex_parallel_ioprocessor()) then
+         write(*,'("Finished ",A)') trim(name)
+      endif
 
    end subroutine 
 
